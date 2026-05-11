@@ -1,4 +1,4 @@
-"""Serveur gRPC vide — intégration Ollama + protos à l’étape AI Service."""
+"""Placeholder gRPC server until Ollama integration and protos are fully wired."""
 
 from __future__ import annotations
 

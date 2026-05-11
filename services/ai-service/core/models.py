@@ -23,7 +23,7 @@ class RiskLevel(models.TextChoices):
 
 class Analysis(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    # Référence applicative vers auth-service — pas de FK cross-service
+    # Application-level reference to auth-service (no cross-service FK)
     user_id = models.UUIDField()
     analysis_type = models.CharField(max_length=20, choices=AnalysisType.choices)
     pod_name = models.CharField(max_length=255, blank=True)

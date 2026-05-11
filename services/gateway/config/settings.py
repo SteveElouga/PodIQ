@@ -31,7 +31,7 @@ DATABASES = {
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 
-# gRPC endpoints — services internes
+# Internal gRPC service endpoints
 AUTH_GRPC_HOST = os.environ.get("AUTH_GRPC_HOST", "auth-service")
 AUTH_GRPC_PORT = int(os.environ.get("AUTH_GRPC_PORT", "50051"))
 ANALYZER_GRPC_HOST = os.environ.get("ANALYZER_GRPC_HOST", "analyzer-service")

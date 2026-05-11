@@ -1,6 +1,6 @@
 """
-Tests des mutations GraphQL register et login.
-Les clients gRPC sont entièrement mockés — aucune base de données requise.
+GraphQL register and login mutation tests.
+gRPC clients are fully mocked; no database required.
 """
 from types import SimpleNamespace
 from unittest.mock import patch

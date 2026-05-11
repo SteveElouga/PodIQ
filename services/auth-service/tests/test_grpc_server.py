@@ -1,6 +1,6 @@
 """
-Tests unitaires du serveur gRPC auth-service.
-Requiert postgres-auth en cours d'exécution (docker compose up -d postgres-auth).
+auth-service gRPC server unit tests.
+Requires postgres-auth (e.g. docker compose up -d postgres-auth).
 """
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -25,7 +25,7 @@ from core.models import User, ApiKey
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def ctx() -> MagicMock:
-    """Retourne un contexte gRPC mocké avec set_code et set_details."""
+    """Return a mocked gRPC context with set_code and set_details."""
     mock = MagicMock(spec=grpc.ServicerContext)
     mock.set_code = MagicMock()
     mock.set_details = MagicMock()
@@ -57,7 +57,7 @@ def api_key(db, user) -> tuple[ApiKey, str]:
     return key, raw
 
 
-# ── Fonctions helpers ─────────────────────────────────────────────────────────
+# -- Helper functions ------------------------------------------------------------
 
 class TestHelpers:
     def test_hash_password_deterministic(self):
@@ -184,13 +184,13 @@ class TestLogin:
         c.set_code.assert_called_once_with(grpc.StatusCode.NOT_FOUND)
 
     def test_login_error_message_is_generic(self, servicer, user):
-        """Le message d'erreur ne révèle pas si c'est l'email ou le mot de passe."""
+        """Error message does not reveal whether email or password was wrong."""
         c = ctx()
         servicer.Login(
             auth_pb2.LoginRequest(email="existing@test.com", password="wrong"), c
         )
         call_args = c.set_details.call_args[0][0]
-        assert "email" in call_args.lower() or "mot de passe" in call_args.lower()
+        assert "email" in call_args.lower() or "password" in call_args.lower()
         assert "existing@test.com" not in call_args
 
 

@@ -1,19 +1,19 @@
-"""Codes machine-lisibles (PodIQ).
+"""Stable machine-readable codes (PodIQ).
 
-Convention GraphQL (recommandée)
+GraphQL convention (recommended)
 --------------------------------
-- Succès : ``data`` renseigné et pas d’entrée dans ``errors``. Pas besoin d’un
-  code de succès dans le corps : c’est le contrat GraphQL standard.
-- Échec : levée d’une erreur GraphQL (ex. Strawberry ``GraphQLError``) avec
-  ``extensions`` contenant au minimum la clé définie par ``GRAPHQL_EXTENSION_CODE``
-  et la valeur = un membre de ``ErrorCode`` (chaîne ``PODIQ_*``).
-- Ne pas s’appuyer sur le statut HTTP pour la logique métier : le playground et
-  beaucoup de clients reçoivent souvent **200** avec ``errors`` non vide.
-- Le mapping HTTP ci-dessous sert surtout pour une future couche REST / CI/CD ;
-  pour du GraphQL pur, il est optionnel et non prioritaire.
+- Success: ``data`` is present and ``errors`` is empty. No success code in the
+  body is required; that is standard GraphQL.
+- Failure: raise a GraphQL error (e.g. Strawberry ``GraphQLError``) with
+  ``extensions`` containing at least ``GRAPHQL_EXTENSION_CODE`` mapped to an
+  ``ErrorCode`` value (``PODIQ_*`` string).
+- Do not rely on HTTP status for business logic: clients often get **200** with
+  a non-empty ``errors`` array.
+- The HTTP mapping below is mainly for a future REST / CI/CD layer; for pure
+  GraphQL it is optional and secondary.
 
-Messages utilisateur : texte lisible dans ``message`` ; codes stables dans
-``extensions`` pour i18n, analytics et clients programmatiques.
+User-facing copy belongs in ``message``; stable codes in ``extensions`` for
+analytics and programmatic clients.
 """
 
 from enum import StrEnum

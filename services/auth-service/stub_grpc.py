@@ -1,4 +1,4 @@
-"""Serveur gRPC vide : les protos seront ajoutés à l’étape définition `.proto`."""
+"""Placeholder gRPC server until auth `.proto` stubs are wired."""
 
 from __future__ import annotations
 

@@ -5,7 +5,7 @@ import yaml
 
 logger = structlog.get_logger()
 
-# Tags sans version fixe — dangereux en prod
+# Image tags without a pinned version are risky in production
 _UNSAFE_TAGS = {"latest", ""}
 
 
