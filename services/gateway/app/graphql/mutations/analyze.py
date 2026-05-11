@@ -2,11 +2,13 @@ import time
 
 import strawberry
 import structlog
+from django.conf import settings
 from strawberry.types import Info
 
 from app.graphql.types import AnalysisResultType
 from app.grpc_clients import analyzer_client, ai_client
 from app.auth import require_auth
+from app.namespace_correlation import build_namespace_context
 from stubs.ai import ai_pb2
 
 logger = structlog.get_logger()
@@ -17,21 +19,19 @@ def _analyze_incident(info: Info, pod_name: str, namespace: str) -> AnalysisResu
     logger.info("mutation_analyze_incident", pod=pod_name, namespace=namespace, user_id=user_id)
 
     pod_data = analyzer_client.collect_pod(pod_name=pod_name, namespace=namespace)
+    incident_ts = int(time.time())
     ns_snapshot = analyzer_client.scan_namespace(
         namespace=namespace,
-        timestamp=int(time.time()),
+        timestamp=incident_ts,
     )
 
-    namespace_context = [
-        ai_pb2.PodContext(
-            pod_name=p.pod_name,
-            status=p.status,
-            had_issues=p.has_errors,
-            issue_timestamp=p.last_restart_time,
-        )
-        for p in ns_snapshot.pods
-        if p.pod_name != pod_name
-    ]
+    namespace_context = build_namespace_context(ns_snapshot, pod_data.pod_name)
+
+    logger.info(
+        "namespace_correlation_built",
+        peer_pods=len(namespace_context),
+        window_minutes=settings.CORRELATION_WINDOW_MINUTES,
+    )
 
     history_response = ai_client.get_history(
         pod_name=pod_data.pod_name,

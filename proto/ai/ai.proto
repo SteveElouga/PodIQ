@@ -31,7 +31,9 @@ message PodContext {
   string pod_name        = 1;
   string status          = 2;
   bool   had_issues      = 3;
-  int64  issue_timestamp = 4;  // unix timestamp
+  int64  issue_timestamp = 4;
+  bool   in_correlation_window = 5;
+  int32  seconds_before_reference = 6;
 }
 
 message AnalysisResult {

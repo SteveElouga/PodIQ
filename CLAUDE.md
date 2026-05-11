@@ -219,7 +219,7 @@ python -m grpc_tools.protoc -I. --python_out=../shared/grpc --grpc_python_out=..
 8. ✅ Loki + Promtail + Grafana configurés (labels service/namespace, rétention 7j)
 9. ✅ README.md dans chaque service (FR, avec analogies, I/O gRPC, DB, env vars)
 10. ✅ Memory Engine (gateway appelle GetHistory avant AnalyzeIncident, injecte history[])
-11. 🔲 Namespace scan + temporal correlation (enrichissement namespace_context)
+11. ✅ Namespace scan + temporal correlation (`namespace_context` enrichment, `CORRELATION_WINDOW_MINUTES`, `PodContext.in_correlation_window`)
 12. 🔲 Pre-deploy scan REST complet
 13. 🔲 CI/CD REST endpoint + API Keys (POST /api/v1/cicd/scan)
 14. 🔲 Redis Queue Dramatiq (flux async complet)
