@@ -113,7 +113,16 @@ services:
     image: redis:7-alpine
     container_name: podiq-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-256mb}
+      - --maxmemory-policy
+      - allkeys-lru
+      - --tcp-keepalive
+      - "300"
     networks:
       - backend
     volumes:
@@ -215,6 +224,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-podiq}:${POSTGRES_PASSWORD:?}@postgres-analyzer:5432/podiq_analyzer
       GRPC_PORT: "50052"
+      STUB_MODE: ${STUB_MODE:-false}
     depends_on:
       postgres-analyzer:
         condition: service_healthy

@@ -240,8 +240,11 @@ async def get_cached_analysis(analysis_id: str):
 ## Eviction policy recommandée
 
 ```
-maxmemory-policy: allkeys-lru
+maxmemory 256mb
+maxmemory-policy allkeys-lru
 ```
+
+La stack de développement applique ces réglages dans `docker-compose.yml` (service `redis`) : `REDIS_MAXMEMORY` (défaut `256mb`) et `--maxmemory-policy allkeys-lru`. En production, fixer `REDIS_MAXMEMORY` à une valeur dimensionnée pour la VM ou le pod (voir aussi `conn-timeouts` : `tcp-keepalive` est activé côté serveur dans le compose).
 
 Justification : toutes les données Redis dans PodIQ sont des caches ou des queues. En cas de pression mémoire, LRU est la politique la plus sûre — les données chaudes restent, les données froides sont évincées. Les données persistantes sont dans PostgreSQL.
 

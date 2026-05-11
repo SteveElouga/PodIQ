@@ -16,7 +16,11 @@ venv/
 # IDE
 .idea/
 .vscode/
+.cursor/
 *.swp
+
+# Claude Code
+.claude/
 
 # Django / tooling
 staticfiles/

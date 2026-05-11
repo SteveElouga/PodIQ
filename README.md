@@ -248,7 +248,8 @@ podiq scan manifest <path/to/deployment.yaml>
 
 ┌────────────────┐
 │    Ollama      │
-│  Mistral 7B    │
+│ qwen2.5-coder  │
+│     :14b       │
 └────────────────┘
 
 ┌────────────────┐
@@ -631,7 +632,7 @@ Application crashes at startup due to missing DATABASE_URL env variable
 | Queue async | Dramatiq + Redis | Plus simple que Celery, moderne |
 | Base de données | PostgreSQL + JSONB | JSONB pour historique incidents |
 | Cache / Queue | Redis | Jobs async, rate limiting, cache API keys |
-| IA locale | Ollama Mistral 7B | Gratuit, Dockerisable, confidentialité logs |
+| IA locale | Ollama 0.23.2 + qwen2.5-coder:14b | Gratuit, Dockerisable, confidentialité logs — configurable via `OLLAMA_MODEL` |
 | Logs centralisés | Grafana Loki | Cohérent avec produit orienté observabilité |
 | Agent logs | Promtail | Lit stdout Docker → Loki |
 | Visualisation | Grafana | Debug rapide + dashboard incidents |
@@ -770,6 +771,10 @@ Dashboard `podiq-overview.json` configuré pour visualiser :
 - Latence des appels Ollama
 - Score de risque des scans pre-deploy
 
+### Nginx — Résolution DNS dynamique
+
+Nginx utilise `resolver 127.0.0.11` (DNS interne Docker) avec une variable `$gateway_upstream` pour re-résoudre le hostname `gateway` à chaque requête. Cela garantit que Nginx continue de fonctionner après un redémarrage du container gateway (qui peut changer d'IP dans le réseau Docker). Ne pas utiliser de bloc `upstream` statique — il résout l'IP une seule fois au démarrage et la garde en cache.
+
 ### Ressources machine recommandées
 
 | Composant | RAM estimée |
@@ -832,6 +837,9 @@ INCIDENT_HISTORY_DEPTH=5
 
 # Corrélation
 CORRELATION_WINDOW_MINUTES=15
+
+# Développement — mettre false avec un vrai cluster K8s
+STUB_MODE=true
 
 # CI/CD
 SLACK_WEBHOOK_URL=
@@ -1116,7 +1124,7 @@ Return ONLY this JSON:
 
 ### Semaine 2 — IA & Différenciants
 
-- [ ] **Memory Engine** : gateway appelle `GetAnalysisHistory` avant chaque `AnalyzeIncident`, injecte `history[]`
+- [x] **Memory Engine** : gateway appelle `GetAnalysisHistory` avant chaque `AnalyzeIncident`, injecte `history[]`
 - [ ] **Corrélation temporelle** complète (fenêtre 15 min, `namespace_context` enrichi)
 - [ ] **Prompt pre-deploy** flux complet gateway ↔ analyzer ↔ ai
 - [ ] Queue Dramatiq + Redis (flux async complet)

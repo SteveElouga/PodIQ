@@ -6,12 +6,14 @@ from strawberry.types import Info
 
 from app.graphql.types import ManifestScanResultType, RiskItemType
 from app.grpc_clients import analyzer_client, ai_client
+from app.auth import require_auth
 
 logger = structlog.get_logger()
 
 
 def _scan_manifest(info: Info, yaml_content: str, manifest_type: str = "") -> ManifestScanResultType:
-    logger.info("mutation_scan_manifest", manifest_type=manifest_type)
+    user_id = require_auth(info)
+    logger.info("mutation_scan_manifest", manifest_type=manifest_type, user_id=user_id)
 
     parsed = analyzer_client.parse_manifest(
         yaml_content=yaml_content,

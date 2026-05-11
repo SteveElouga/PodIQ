@@ -7,6 +7,7 @@ from strawberry.types import Info
 
 from app.graphql.types import AnalysisHistoryItem
 from app.grpc_clients import ai_client
+from app.auth import require_auth
 
 logger = structlog.get_logger()
 
@@ -17,7 +18,8 @@ def _analysis_history(
     namespace: str,
     limit: int = 10,
 ) -> list[AnalysisHistoryItem]:
-    logger.info("query_analysis_history", pod=pod_name, namespace=namespace)
+    user_id = require_auth(info)
+    logger.info("query_analysis_history", pod=pod_name, namespace=namespace, user_id=user_id)
 
     response = ai_client.get_history(
         pod_name=pod_name,
