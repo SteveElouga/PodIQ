@@ -1,0 +1,25 @@
+# Python
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache
+**/.ruff_cache
+
+# Tests
+**/tests/
+**/conftest.py
+**/pytest.ini
+
+# Dev
+.env
+.git
+.gitignore
+requirements-dev.txt
+*.md
+infra/
+
+# Editors
+.vscode
+.idea
+**/*.swp

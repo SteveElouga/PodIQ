@@ -1,0 +1,315 @@
+# Podiq — Phase 1 : stack MVP (dev)
+# Usage : copier .env.example vers .env puis `docker compose up -d --build`
+
+name: podiq
+
+networks:
+  backend:
+    driver: bridge
+  observability:
+    driver: bridge
+
+volumes:
+  postgres_gateway_data:
+  postgres_auth_data:
+  postgres_analyzer_data:
+  postgres_ai_data:
+  redis_data:
+  grafana_data:
+  loki_data:
+  ollama_data:
+
+services:
+
+  # ────────────────────────────────────────────
+  # Bases de données — une par service
+  # ────────────────────────────────────────────
+
+  postgres-gateway:
+    image: postgres:16-alpine
+    container_name: podiq-postgres-gateway
+    restart: unless-stopped
+    networks:
+      - backend
+    environment:
+      POSTGRES_DB: podiq_gateway
+      POSTGRES_USER: ${POSTGRES_USER:-podiq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_gateway_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d podiq_gateway"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-auth:
+    image: postgres:16-alpine
+    container_name: podiq-postgres-auth
+    restart: unless-stopped
+    networks:
+      - backend
+    environment:
+      POSTGRES_DB: podiq_auth
+      POSTGRES_USER: ${POSTGRES_USER:-podiq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_auth_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d podiq_auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-analyzer:
+    image: postgres:16-alpine
+    container_name: podiq-postgres-analyzer
+    restart: unless-stopped
+    networks:
+      - backend
+    environment:
+      POSTGRES_DB: podiq_analyzer
+      POSTGRES_USER: ${POSTGRES_USER:-podiq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_analyzer_data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d podiq_analyzer"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  postgres-ai:
+    image: postgres:16-alpine
+    container_name: podiq-postgres-ai
+    restart: unless-stopped
+    networks:
+      - backend
+    environment:
+      POSTGRES_DB: podiq_ai
+      POSTGRES_USER: ${POSTGRES_USER:-podiq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_ai_data:/var/lib/postgresql/data
+    ports:
+      - "5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d podiq_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ────────────────────────────────────────────
+  # Infrastructure partagée
+  # ────────────────────────────────────────────
+
+  redis:
+    image: redis:7-alpine
+    container_name: podiq-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    networks:
+      - backend
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:0.23.2
+    container_name: podiq-ollama
+    restart: unless-stopped
+    networks:
+      - backend
+    volumes:
+      - ollama_data:/root/.ollama
+    # GPU optionnel — décommenter sur une machine Linux+NVIDIA si besoin
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    expose:
+      - "11434"
+
+  # ────────────────────────────────────────────
+  # Services applicatifs
+  # ────────────────────────────────────────────
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    container_name: podiq-gateway
+    restart: unless-stopped
+    networks:
+      - backend
+      - observability
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-podiq}:${POSTGRES_PASSWORD:?}@postgres-gateway:5432/podiq_gateway
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      AUTH_GRPC_HOST: ${AUTH_GRPC_HOST:-auth-service}
+      AUTH_GRPC_PORT: ${AUTH_GRPC_PORT:-50051}
+      ANALYZER_GRPC_HOST: ${ANALYZER_GRPC_HOST:-analyzer-service}
+      ANALYZER_GRPC_PORT: ${ANALYZER_GRPC_PORT:-50052}
+      AI_GRPC_HOST: ${AI_GRPC_HOST:-ai-service}
+      AI_GRPC_PORT: ${AI_GRPC_PORT:-50053}
+    depends_on:
+      postgres-gateway:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/auth-service/Dockerfile
+    container_name: podiq-auth-service
+    restart: unless-stopped
+    networks:
+      - backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-podiq}:${POSTGRES_PASSWORD:?}@postgres-auth:5432/podiq_auth
+      GRPC_PORT: "50051"
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+    expose:
+      - "50051"
+
+  analyzer-service:
+    build:
+      context: .
+      dockerfile: services/analyzer-service/Dockerfile
+    container_name: podiq-analyzer-service
+    restart: unless-stopped
+    networks:
+      - backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-podiq}:${POSTGRES_PASSWORD:?}@postgres-analyzer:5432/podiq_analyzer
+      GRPC_PORT: "50052"
+    depends_on:
+      postgres-analyzer:
+        condition: service_healthy
+    expose:
+      - "50052"
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: services/ai-service/Dockerfile
+    container_name: podiq-ai-service
+    restart: unless-stopped
+    networks:
+      - backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-podiq}:${POSTGRES_PASSWORD:?}@postgres-ai:5432/podiq_ai
+      GRPC_PORT: "50053"
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+    depends_on:
+      postgres-ai:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    expose:
+      - "50053"
+
+  # ────────────────────────────────────────────
+  # Observabilité
+  # ────────────────────────────────────────────
+
+  loki:
+    image: grafana/loki:3.1.1
+    container_name: podiq-loki
+    restart: unless-stopped
+    networks:
+      - observability
+    command: ["-config.file=/etc/loki/config.yml"]
+    volumes:
+      - loki_data:/loki
+      - ./infra/loki/loki-config.yml:/etc/loki/config.yml:ro
+    expose:
+      - "3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  promtail:
+    image: grafana/promtail:3.1.1
+    container_name: podiq-promtail
+    restart: unless-stopped
+    networks:
+      - observability
+      - backend
+    volumes:
+      - ./infra/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ["-config.file=/etc/promtail/config.yml"]
+    depends_on:
+      loki:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: podiq-grafana
+    restart: unless-stopped
+    networks:
+      - observability
+      - backend
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      loki:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: podiq-nginx
+    restart: unless-stopped
+    networks:
+      - backend
+    volumes:
+      - ./infra/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "8080:80"
+    depends_on:
+      gateway:
+        condition: service_healthy

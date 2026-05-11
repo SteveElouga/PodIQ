@@ -1,0 +1,30 @@
+# Environment
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Django / tooling
+staticfiles/
+media/
+*.sqlite3
+
+# Generated gRPC (after codegen)
+**/generated/
+
+# OS
+.DS_Store

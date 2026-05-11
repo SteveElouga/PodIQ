@@ -1,0 +1,38 @@
+# Collecte logs des conteneurs Docker → Loki (nécessite le socket Docker monté).
+
+server:
+  http_listen_address: 0.0.0.0
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+    batchwait: 1s
+
+scrape_configs:
+  - job_name: podiq-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        filters:
+          - name: name
+            values: ["podiq-"]   # ne collecte que les conteneurs PodIQ
+    relabel_configs:
+      # Nom brut du conteneur (ex: /podiq-auth-service)
+      - source_labels: [__meta_docker_container_name]
+        regex: (.+)
+        target_label: container
+      # Label "service" lisible : supprime le préfixe "/podiq-"
+      - source_labels: [__meta_docker_container_name]
+        regex: /podiq-(.+)
+        target_label: service
+      # stdout ou stderr
+      - source_labels: [__meta_docker_container_log_stream]
+        target_label: stream
+      # namespace PodIQ pour filtrer facilement dans Grafana
+      - replacement: podiq
+        target_label: namespace
+      - replacement: podiq/docker
+        target_label: job

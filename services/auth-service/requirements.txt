@@ -1,0 +1,9 @@
+Django==5.2.1
+psycopg[binary]==3.2.9
+PyJWT==2.10.1
+grpcio==1.80.0
+protobuf==6.31.1
+python-dotenv==1.1.0
+structlog==25.4.0
+pytest==8.3.5
+pytest-django==4.11.1

@@ -1,0 +1,79 @@
+syntax = "proto3";
+
+package auth;
+
+service AuthService {
+  rpc Register    (RegisterRequest)    returns (AuthResponse);
+  rpc Login       (LoginRequest)       returns (AuthResponse);
+  rpc ValidateJWT (ValidateJWTRequest) returns (ValidateJWTResponse);
+  rpc CreateApiKey (CreateApiKeyRequest) returns (ApiKeyResponse);
+  rpc ValidateApiKey (ValidateApiKeyRequest) returns (ValidateApiKeyResponse);
+  rpc RevokeApiKey (RevokeApiKeyRequest) returns (RevokeApiKeyResponse);
+}
+
+// ── Register ──────────────────────────────────────────────────────────────────
+
+message RegisterRequest {
+  string email    = 1;
+  string password = 2;
+}
+
+// ── Login ─────────────────────────────────────────────────────────────────────
+
+message LoginRequest {
+  string email    = 1;
+  string password = 2;
+}
+
+message AuthResponse {
+  string user_id = 1;
+  string token   = 2;
+  string email   = 3;
+}
+
+// ── JWT validation ────────────────────────────────────────────────────────────
+
+message ValidateJWTRequest {
+  string token = 1;
+}
+
+message ValidateJWTResponse {
+  bool   valid   = 1;
+  string user_id = 2;
+  string email   = 3;
+  string error   = 4;
+}
+
+// ── API Keys (CI/CD pipelines) ────────────────────────────────────────────────
+
+message CreateApiKeyRequest {
+  string user_id = 1;
+  string name    = 2;  // ex: "github-actions-prod"
+}
+
+message ApiKeyResponse {
+  string key_id      = 1;
+  string raw_key     = 2;  // retourné une seule fois à la création
+  string name        = 3;
+  string created_at  = 4;
+}
+
+message ValidateApiKeyRequest {
+  string raw_key = 1;
+}
+
+message ValidateApiKeyResponse {
+  bool   valid   = 1;
+  string user_id = 2;
+  string key_id  = 3;
+  string error   = 4;
+}
+
+message RevokeApiKeyRequest {
+  string key_id  = 1;
+  string user_id = 2;  // vérification que la clé appartient à l'utilisateur
+}
+
+message RevokeApiKeyResponse {
+  bool success = 1;
+}

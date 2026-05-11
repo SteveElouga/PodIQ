@@ -1,0 +1,19 @@
+# Outils de développement — à installer dans le venv racine
+# Usage : pip install -r requirements-dev.txt
+
+# gRPC — génération des stubs depuis les proto files
+# Commande : python -m grpc_tools.protoc -I proto --python_out=shared/grpc --grpc_python_out=shared/grpc proto/**/*.proto
+grpcio-tools==1.80.0
+
+# Qualité de code
+black==25.1.0
+ruff==0.11.9
+mypy==1.15.0
+isort==6.0.1
+pre-commit==4.2.0
+
+# Tests
+pytest==8.3.5
+pytest-django==4.11.1
+pytest-asyncio==0.26.0
+coverage==7.8.0

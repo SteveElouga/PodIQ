@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package ai;
+
+service AIService {
+  rpc AnalyzeIncident    (IncidentRequest)    returns (AnalysisResult);
+  rpc ScanManifest       (ManifestScanRequest) returns (ManifestScanResult);
+  rpc GetAnalysisHistory (HistoryRequest)     returns (HistoryResponse);
+}
+
+// ── AnalyzeIncident ───────────────────────────────────────────────────────────
+
+message IncidentRequest {
+  string              pod_name          = 1;
+  string              namespace         = 2;
+  string              status            = 3;
+  string              logs              = 4;
+  string              events            = 5;
+  repeated PastIncident history         = 6;  // Memory Engine — 5 derniers incidents
+  repeated PodContext namespace_context = 7;  // Corrélation temporelle
+}
+
+message PastIncident {
+  string error_type   = 1;
+  string root_cause   = 2;
+  string solution     = 3;
+  int64  occurred_at  = 4;  // unix timestamp
+}
+
+message PodContext {
+  string pod_name        = 1;
+  string status          = 2;
+  bool   had_issues      = 3;
+  int64  issue_timestamp = 4;  // unix timestamp
+}
+
+message AnalysisResult {
+  string error_type              = 1;
+  string root_cause              = 2;
+  string explanation             = 3;
+  string solution                = 4;
+  string confidence              = 5;  // high | medium | low
+  bool   is_recurring            = 6;
+  int32  recurrence_count        = 7;
+  string correlated_service      = 8;  // vide si pas de corrélation
+  string correlation_explanation = 9;
+}
+
+// ── ScanManifest (pre-deploy + CI/CD) ────────────────────────────────────────
+
+message ManifestScanRequest {
+  string              parsed_manifest  = 1;  // JSON sérialisé du ParsedManifest
+  repeated PastIncident related_history = 2;  // incidents liés à ce type de config
+}
+
+message ManifestScanResult {
+  string           risk_level = 1;  // safe | warning | block
+  repeated RiskItem risks     = 2;
+  string           summary    = 3;
+}
+
+message RiskItem {
+  string severity    = 1;  // low | medium | high | critical
+  string category    = 2;  // missing_env | probe | image_tag | memory | security
+  string description = 3;
+  string fix         = 4;
+}
+
+// ── GetAnalysisHistory ────────────────────────────────────────────────────────
+
+message HistoryRequest {
+  string pod_name  = 1;
+  string namespace = 2;
+  int32  limit     = 3;  // défaut 10
+}
+
+message HistoryItem {
+  string id               = 1;
+  string pod_name         = 2;
+  string namespace        = 3;
+  string error_type       = 4;
+  string root_cause       = 5;
+  string solution         = 6;
+  string confidence       = 7;
+  bool   is_recurring     = 8;
+  int32  recurrence_count = 9;
+  int64  created_at       = 10;  // unix timestamp
+}
+
+message HistoryResponse {
+  repeated HistoryItem items = 1;
+}
