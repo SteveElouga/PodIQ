@@ -677,7 +677,7 @@ kubernetes==32.0.1
 PyYAML==6.0.2
 python-dotenv==1.1.0
 structlog==25.4.0
-pydantic==2.11.4
+pydantic==2.13.4
 ```
 
 ### AI Service
@@ -690,7 +690,7 @@ protobuf==6.31.1
 httpx==0.28.1
 python-dotenv==1.1.0
 structlog==25.4.0
-pydantic==2.11.4
+pydantic==2.13.4
 ```
 
 ### Auth Service
