@@ -32,3 +32,6 @@ media/
 
 # OS
 .DS_Store
+
+# Secrets
+.secrets.baseline

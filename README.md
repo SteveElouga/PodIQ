@@ -86,6 +86,14 @@ curl -s -X POST http://localhost:8080/graphql \
 
 Ouvrir **`http://localhost:8080/graphql`** dans le navigateur (header `Authorization: Bearer <token>`).
 
+### Pré-commit (qualité avant commit)
+
+À la racine du dépôt, avec un environnement virtuel : `pip install -r requirements-dev.txt`, puis **`pre-commit install`**. Les hooks exécutés avant chaque **`git commit`** incluent notamment la normalisation des fins de ligne, la validation YAML (dont `docker-compose.yml`), **Black**, **Ruff**, **detect-secrets** (référence `.secrets.baseline`), **yamllint**, **hadolint** sur les `Dockerfile` sous `services/*/`, et **mypy** sur les paquets Python Django des services via `scripts/run_mypy_precommit.py`. La configuration partagée est dans **`pyproject.toml`** ; le répertoire **`stubs/`** expose les imports `stubs.*` vers **`shared/grpc/`** pour les outils locaux.
+
+- **`pre-commit run`** sans option ne vérifie **que les fichiers déjà stagés** ; si l’index est vide, la plupart des hooks affichent « no files to check » — comportement attendu.
+- Pour une passe complète sur le dépôt : **`pre-commit run --all-files`**.
+- Si un hook **réécrit** des fichiers (souvent Black ou Ruff avec corrections), Git **refuse le commit** jusqu’à ce que vous **`git add`** à nouveau ces fichiers.
+
 ---
 
 ## 1. Vision produit & positionnement
@@ -411,10 +419,18 @@ podiq/
 │   │   └── pattern.py
 │   └── grpc/                          # stubs gRPC générés
 │
+├── stubs/                             # paquet local stubs.* → liens vers shared/grpc/
+├── scripts/
+│   ├── run_all_tests.sh               # pytest des quatre services
+│   └── run_mypy_precommit.py          # mypy multi-services (pre-commit)
+├── pyproject.toml                     # Black, Ruff, mypy
+├── .pre-commit-config.yaml
+├── .secrets.baseline                  # références detect-secrets (faux positifs connus)
+├── .yamllint.yml
+├── pytest.ini
+├── requirements-dev.txt               # outils dev + pre-commit + grpcio-tools
 ├── docker-compose.yml
-├── docker-compose.override.yml
 ├── .env.example
-├── Makefile
 └── README.md
 ```
 
@@ -797,17 +813,20 @@ pytest-django==4.11.1
 ### Dev (racine) — `requirements-dev.txt`
 
 ```txt
-grpcio-tools==1.73.0
+grpcio-tools==1.80.0
 black==25.1.0
 isort==6.0.1
 ruff==0.11.9
 mypy==1.15.0
+pre-commit==4.2.0
+detect-secrets==1.5.0
 pytest==8.3.5
 pytest-django==4.11.1
 pytest-asyncio==0.26.0
 coverage==7.8.0
-pre-commit==4.2.0
 ```
+
+Les versions exactes peuvent évoluer ; se référer au fichier **`requirements-dev.txt`** à la racine. Les hooks **pre-commit** installent leurs propres environnements pour Black, Ruff, detect-secrets, yamllint, hadolint et mypy (avec dépendances Python agrégées pour les quatre services Django).
 
 ---
 
@@ -1295,6 +1314,7 @@ Return ONLY this JSON:
 - Pydantic v2 pour **tous** les modèles de données inter-services et réponses IA
 - `structlog` pour les logs — jamais `print` ni `logging` standard
 - Ruff pour le linting, Black pour le formatage
+- Hooks **pre-commit** décrits en **§ 0** (`pre-commit install`) ; sans installation des hooks, les mêmes contrôles restent disponibles avec `pre-commit run` / `pre-commit run --all-files`
 - Tests Pytest, coverage > 70%
 
 ### Points d'attention critiques
