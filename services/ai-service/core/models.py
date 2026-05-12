@@ -33,7 +33,9 @@ class Analysis(models.Model):
     root_cause = models.TextField(blank=True)
     explanation = models.TextField(blank=True)
     solution = models.TextField(blank=True)
-    confidence = models.CharField(max_length=20, choices=ConfidenceLevel.choices, blank=True)
+    confidence = models.CharField(
+        max_length=20, choices=ConfidenceLevel.choices, blank=True
+    )
     risk_level = models.CharField(max_length=20, choices=RiskLevel.choices, blank=True)
     is_recurring = models.BooleanField(default=False)
     recurrence_count = models.IntegerField(default=0)

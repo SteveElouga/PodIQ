@@ -82,6 +82,12 @@ Tous les services (sans Postgres pour gateway ni auth-service en tests unitaires
 ./scripts/run_all_tests.sh
 ```
 
+### Pre-commit (qualité avant commit)
+
+À la racine du dépôt : `pip install -r requirements-dev.txt`, puis `pre-commit install`. Les hooks appliquent notamment Black, Ruff, détection de secrets (`detect-secrets` avec `.secrets.baseline`), yamllint, hadolint sur les Dockerfiles et mypy sur les paquets Python des services Django (`scripts/run_mypy_precommit.py`). Le répertoire `stubs/` du clone contient des liens symboliques vers `shared/grpc/` pour que les imports `stubs.*` utilisés par les services soient résolus par les outils locaux.
+
+Vérification manuelle une fois : `pre-commit run --all-files`.
+
 ### Tests unitaires dans un conteneur Docker
 
 Les Dockerfiles posent le code dans `/app` et les stubs gRPC dans `/app/stubs`. Après `docker compose build` (ou `up --build`), lancer pytest **à la place** du `CMD` du service, sans démarrer toute la stack :

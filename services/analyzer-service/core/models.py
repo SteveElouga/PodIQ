@@ -34,7 +34,9 @@ class NamespaceSnapshot(models.Model):
         db_table = "namespace_snapshots"
         indexes = [
             models.Index(fields=["analysis_id"], name="ns_analysis_idx"),
-            models.Index(fields=["namespace", "collected_at"], name="ns_namespace_time_idx"),
+            models.Index(
+                fields=["namespace", "collected_at"], name="ns_namespace_time_idx"
+            ),
         ]
 
     def __str__(self) -> str:

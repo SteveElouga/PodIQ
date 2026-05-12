@@ -207,7 +207,7 @@ C'est une étape critique pour la sécurité. Le service doit s'assurer que **ja
 
 Les 2000 dernières lignes sont conservées (les plus récentes = les plus pertinentes).
 
-**Pourquoi ici et pas dans l'AI Service ?**  
+**Pourquoi ici et pas dans l'AI Service ?**
 Règle architecturale : les données doivent être nettoyées **avant toute transmission** inter-service. L'AI Service reçoit des données déjà prêtes.
 
 ### Masquage des secrets
@@ -249,8 +249,8 @@ Gateway ──gRPC──▶ Analyzer Service ──API──▶ Kubernetes (kube
                         └──▶ postgres-analyzer
 ```
 
-Ce service est **appelé par** le Gateway.  
-Ce service **appelle** l'API Kubernetes (et sa propre base de données).  
+Ce service est **appelé par** le Gateway.
+Ce service **appelle** l'API Kubernetes (et sa propre base de données).
 Ce service **ne connaît pas** l'AI Service — c'est le Gateway qui orchestre.
 
 ---

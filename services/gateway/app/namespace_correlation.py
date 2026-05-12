@@ -19,7 +19,11 @@ def build_namespace_context(
             continue
         in_window = False
         seconds_before = 0
-        if reference_ts > 0 and p.last_restart_time > 0 and reference_ts >= p.last_restart_time:
+        if (
+            reference_ts > 0
+            and p.last_restart_time > 0
+            and reference_ts >= p.last_restart_time
+        ):
             delta = reference_ts - p.last_restart_time
             if delta <= window_sec:
                 in_window = True

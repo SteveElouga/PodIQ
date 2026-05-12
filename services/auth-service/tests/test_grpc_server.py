@@ -2,8 +2,9 @@
 Tests unitaires du serveur gRPC auth-service.
 Base SQLite en mémoire via config.settings_pytest (pas de .env obligatoire).
 """
+
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import grpc
@@ -11,18 +12,18 @@ import jwt
 import pytest
 
 from app.grpc_server import (
+    JWT_SECRET,
     AuthServicer,
-    _hash_password,
-    _verify_password,
     _generate_token,
     _hash_api_key,
-    JWT_SECRET,
+    _hash_password,
+    _verify_password,
 )
+from core.models import ApiKey, User
 from stubs.auth import auth_pb2
-from core.models import User, ApiKey
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def ctx() -> MagicMock:
     """Retourne un contexte gRPC mocké avec set_code et set_details."""
@@ -59,6 +60,7 @@ def api_key(db, user) -> tuple[ApiKey, str]:
 
 # ── Fonctions helpers ─────────────────────────────────────────────────────────
 
+
 class TestHelpers:
     def test_hash_password_deterministic(self):
         assert _hash_password("secret") == _hash_password("secret")
@@ -84,7 +86,7 @@ class TestHelpers:
         token = _generate_token("uid-123", "user@test.com")
         payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
         assert "exp" in payload
-        assert payload["exp"] > datetime.now(timezone.utc).timestamp()
+        assert payload["exp"] > datetime.now(UTC).timestamp()
 
     def test_hash_api_key_deterministic(self):
         assert _hash_api_key("mykey") == _hash_api_key("mykey")
@@ -94,6 +96,7 @@ class TestHelpers:
 
 
 # ── Register ──────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.django_db
 class TestRegister:
@@ -117,7 +120,8 @@ class TestRegister:
     def test_register_password_not_stored_in_plain(self, servicer):
         c = ctx()
         servicer.Register(
-            auth_pb2.RegisterRequest(email="hash@test.com", password="myplainpassword"), c
+            auth_pb2.RegisterRequest(email="hash@test.com", password="myplainpassword"),
+            c,
         )
         user = User.objects.get(email="hash@test.com")
         assert user.password_hash != "myplainpassword"
@@ -150,12 +154,16 @@ class TestRegister:
 
 # ── Login ─────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.django_db
 class TestLogin:
     def test_login_success(self, servicer, user):
         c = ctx()
         resp = servicer.Login(
-            auth_pb2.LoginRequest(email="existing@test.com", password="correct-password"), c
+            auth_pb2.LoginRequest(
+                email="existing@test.com", password="correct-password"
+            ),
+            c,
         )
         assert resp.email == "existing@test.com"
         assert resp.token != ""
@@ -164,7 +172,10 @@ class TestLogin:
     def test_login_returns_valid_jwt(self, servicer, user):
         c = ctx()
         resp = servicer.Login(
-            auth_pb2.LoginRequest(email="existing@test.com", password="correct-password"), c
+            auth_pb2.LoginRequest(
+                email="existing@test.com", password="correct-password"
+            ),
+            c,
         )
         payload = jwt.decode(resp.token, JWT_SECRET, algorithms=["HS256"])
         assert payload["email"] == "existing@test.com"
@@ -196,6 +207,7 @@ class TestLogin:
 
 # ── ValidateJWT ───────────────────────────────────────────────────────────────
 
+
 class TestValidateJWT:
     def test_valid_token_returns_true(self, servicer):
         token = _generate_token("uid-42", "valid@test.com")
@@ -210,8 +222,8 @@ class TestValidateJWT:
         payload = {
             "user_id": "uid-42",
             "email": "expired@test.com",
-            "iat": datetime(2020, 1, 1, tzinfo=timezone.utc),
-            "exp": datetime(2020, 1, 2, tzinfo=timezone.utc),
+            "iat": datetime(2020, 1, 1, tzinfo=UTC),
+            "exp": datetime(2020, 1, 2, tzinfo=UTC),
         }
         token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
         c = ctx()
@@ -227,7 +239,9 @@ class TestValidateJWT:
         assert resp.error != ""
 
     def test_wrong_secret_token_returns_false(self, servicer):
-        token = jwt.encode({"user_id": "uid", "email": "e"}, "wrong-secret", algorithm="HS256")
+        token = jwt.encode(
+            {"user_id": "uid", "email": "e"}, "wrong-secret", algorithm="HS256"
+        )
         c = ctx()
         resp = servicer.ValidateJWT(auth_pb2.ValidateJWTRequest(token=token), c)
         assert resp.valid is False
@@ -239,6 +253,7 @@ class TestValidateJWT:
 
 
 # ── CreateApiKey ──────────────────────────────────────────────────────────────
+
 
 @pytest.mark.django_db
 class TestCreateApiKey:
@@ -293,6 +308,7 @@ class TestCreateApiKey:
 
 # ── ValidateApiKey ────────────────────────────────────────────────────────────
 
+
 @pytest.mark.django_db
 class TestValidateApiKey:
     def test_valid_key_returns_true(self, servicer, api_key):
@@ -329,6 +345,7 @@ class TestValidateApiKey:
 
 
 # ── RevokeApiKey ──────────────────────────────────────────────────────────────
+
 
 @pytest.mark.django_db
 class TestRevokeApiKey:

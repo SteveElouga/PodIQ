@@ -47,7 +47,9 @@ def _format_history(history: list[ai_pb2.PastIncident]) -> str:
         return "No previous incidents recorded."
     lines = []
     for i, inc in enumerate(history, 1):
-        lines.append(f"{i}. [{inc.error_type}] {inc.root_cause} — Solution: {inc.solution}")
+        lines.append(
+            f"{i}. [{inc.error_type}] {inc.root_cause} — Solution: {inc.solution}"
+        )
     return "\n".join(lines)
 
 

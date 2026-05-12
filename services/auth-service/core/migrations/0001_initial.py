@@ -11,7 +11,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="User",
             fields=[
-                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
                 ("email", models.EmailField(max_length=255, unique=True)),
                 ("password_hash", models.CharField(max_length=255)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
@@ -21,7 +29,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="ApiKey",
             fields=[
-                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
                 ("user_id", models.UUIDField()),
                 ("key_hash", models.CharField(max_length=255)),
                 ("name", models.CharField(blank=True, max_length=100)),

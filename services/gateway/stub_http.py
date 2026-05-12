@@ -4,13 +4,17 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *_args):  # noqa: D401
+    def log_message(self, *_args):
         return
 
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
         if path in ("/", "/healthz"):
-            body = b"ok" if path == "/healthz" else b"podiq gateway stub — remplacer par Django"
+            body = (
+                b"ok"
+                if path == "/healthz"
+                else "podiq gateway stub — remplacer par Django".encode()
+            )
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
