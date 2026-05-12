@@ -2,9 +2,14 @@
 Unit tests for app/auth.py (require_auth).
 The gRPC auth_client is fully mocked — no database or network required.
 """
+import grpc
 import pytest
+from graphql import GraphQLError
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from app.api_codes import GRAPHQL_EXTENSION_CODE, ErrorCode
+from tests.grpc_fake import FakeRpcError
 
 
 def make_info(auth_header: str | None = None) -> SimpleNamespace:
@@ -59,6 +64,16 @@ class TestRequireAuth:
             from app.auth import require_auth
             result = require_auth(make_info("Bearer valid-token"))
         assert result == "user-uuid-42"
+
+    def test_raises_graphql_when_validate_jwt_grpc_fails(self):
+        err = FakeRpcError(grpc.StatusCode.UNAVAILABLE, "")
+        with patch("app.auth.auth_client.validate_jwt", side_effect=err):
+            from app.auth import require_auth
+
+            with pytest.raises(GraphQLError) as exc_info:
+                require_auth(make_info("Bearer valid-token"))
+
+        assert exc_info.value.extensions[GRAPHQL_EXTENSION_CODE] == ErrorCode.AUTH_GRPC.value
 
     def test_validate_jwt_called_with_extracted_token(self):
         response = make_jwt_response(valid=True, user_id="uid")
