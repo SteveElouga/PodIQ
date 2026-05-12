@@ -65,9 +65,9 @@ PodIQ is an AI-powered Kubernetes incident intelligence platform. It analyzes po
 
 Chaque service a son propre `pytest.ini`, `PYTHONPATH` implicite (répertoire du service) et `app.*`. **Ne pas** lancer `pytest` depuis la racine du dépôt pour collecter toute l’arborescence : le `pytest.ini` à la racine **ignore** le dossier `services/` pour éviter les erreurs `No module named 'tests.*'`.
 
-Le **gateway** utilise `config.settings_pytest` (SQLite en mémoire, pas besoin de `.env` ni de Postgres pour les tests unitaires). Le fichier `tests/conftest.py` enregistre le paquet `stubs` vers `shared/grpc` (même disposition que dans l’image Docker).
+Le **gateway** et **auth-service** utilisent `config.settings_pytest` (SQLite en mémoire, pas besoin de `.env` ni de Postgres pour les tests unitaires). Leur `tests/conftest.py` enregistre le paquet `stubs` vers `shared/grpc` **depuis le clone du dépôt**, ou vers `/app/stubs` **dans l’image Docker**. Pour **auth-service**, `conftest.py` définit aussi `JWT_SECRET` et `DJANGO_SECRET_KEY` par défaut pour l’import de `app.grpc_server`.
 
-Pour **Python 3.14** en local, utiliser les versions à jour du `requirements.txt` du gateway (notamment **Strawberry GraphQL** ≥ 0.31 — compatibilité `dataclasses` / `Field`).
+Les tests **locaux du gateway** peuvent utiliser **Python 3.14** : le `requirements.txt` installe **Strawberry GraphQL** depuis une archive GitHub (commit pinné), car la version PyPI ne gère pas encore `dataclasses.Field(..., doc=...)` sous 3.14.
 
 ```bash
 cd services/gateway && python3 -m pytest -v
@@ -76,11 +76,26 @@ cd services/ai-service && python3 -m pytest -v
 cd services/auth-service && python3 -m pytest -v
 ```
 
-Tous les services (auth-service nécessite PostgreSQL auth, voir README du service) :
+Tous les services (sans Postgres pour gateway ni auth-service en tests unitaires) :
 
 ```bash
 ./scripts/run_all_tests.sh
 ```
+
+### Tests unitaires dans un conteneur Docker
+
+Les Dockerfiles posent le code dans `/app` et les stubs gRPC dans `/app/stubs`. Après `docker compose build` (ou `up --build`), lancer pytest **à la place** du `CMD` du service, sans démarrer toute la stack :
+
+```bash
+docker compose run --rm --no-deps gateway python -m pytest -v
+docker compose run --rm --no-deps auth-service python -m pytest -v
+docker compose run --rm --no-deps ai-service python -m pytest -v
+docker compose run --rm --no-deps analyzer-service python -m pytest -v
+```
+
+Le répertoire de travail est déjà `/app`. Ces suites n’ont pas besoin de Postgres ni de Redis pour les réglages pytest actuels.
+
+En cas de **`collected 0 items`** dans l’image : vérifier `ls -la /app/tests` (le dossier doit exister) puis **`docker compose build --no-cache <service>`** si le `.dockerignore` venait d’être modifié. Lancer explicitement : `python -m pytest -v tests/`. **Ne pas** coller la sortie de pytest dans le shell (les lignes `===` ne sont pas des commandes). Une erreur **`unrecognized arguments: -#`** vient en général d’un **`#` collé à `-v`** (ex. copier-coller depuis du Markdown) ou d’un tiret parasite : la commande doit être exactement `python -m pytest -v` ou `python -m pytest -v tests/`.
 
 ### Start all services
 ```bash

@@ -1,6 +1,6 @@
 """
 Tests unitaires du serveur gRPC auth-service.
-Requiert postgres-auth en cours d'exécution (docker compose up -d postgres-auth).
+Base SQLite en mémoire via config.settings_pytest (pas de .env obligatoire).
 """
 import uuid
 from datetime import datetime, timezone, timedelta
