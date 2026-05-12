@@ -1,6 +1,6 @@
 """
-Tests unitaires de app/auth.py (require_auth).
-Le client gRPC auth_client est entièrement mocké.
+Unit tests for app/auth.py (require_auth).
+The gRPC auth_client is fully mocked — no database or network required.
 """
 import pytest
 from types import SimpleNamespace

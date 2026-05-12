@@ -1,7 +1,7 @@
 """
-Tests unitaires des collectors pod et namespace.
-Le chemin stub (STUB_MODE=True) est testé sans dépendance Kubernetes.
-Le chemin réel est testé avec l'API K8s entièrement mockée.
+Unit tests for the pod and namespace collectors.
+The stub path (STUB_MODE=True) is tested without any Kubernetes dependency.
+The real path is tested with the K8s API fully mocked.
 """
 import time
 from types import SimpleNamespace

@@ -1,6 +1,6 @@
 """
-Tests unitaires de app/parsers/log_cleaner.py.
-Fonctions pures — aucune dépendance externe.
+Unit tests for app/parsers/log_cleaner.py.
+Pure functions — no external dependencies.
 """
 from app.parsers.log_cleaner import truncate, mask_secrets, clean, MAX_LOG_LINES
 

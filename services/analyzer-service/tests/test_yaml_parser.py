@@ -1,6 +1,6 @@
 """
-Tests unitaires de app/parsers/yaml_parser.py.
-Fonctions pures — aucune dépendance K8s ni base de données.
+Unit tests for app/parsers/yaml_parser.py.
+Pure functions — no Kubernetes or database dependency.
 """
 from app.parsers.yaml_parser import parse_manifest
 

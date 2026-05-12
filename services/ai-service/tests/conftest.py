@@ -1,6 +1,6 @@
 """
-Configure le path pour que stubs.ai.ai_pb2 soit importable
-sans Docker — pointe vers shared/grpc/ à la racine du dépôt.
+Configures sys.path so that stubs.ai.ai_pb2 is importable
+without Docker — points to shared/grpc/ at the repository root.
 """
 import sys
 import os
