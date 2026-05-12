@@ -185,7 +185,7 @@ Any time code touches Redis — cache reads/writes, Dramatiq queue, rate limitin
 
 - Python 3.12 everywhere, type hints required on all functions
 - Pydantic v2 for all inter-service data models and AI responses
-- `structlog` for logging — never `print` or standard `logging`
+- `structlog` pour tous les logs applicatifs — jamais `print` ni `logging` standard. La configuration partagée est dans **`shared/podiq_logging/structlog_setup.py`** : en conteneur (`LOG_FORMAT` défini à `json` dans les Dockerfiles ou **`PODIQ_SERVICE_NAME`** présent), une ligne = un objet JSON avec au minimum **`timestamp`** (ISO UTC), **`level`**, **`service`** (`gateway`, `auth-service`, `analyzer-service`, `ai-service`), **`event`** (slug snake_case). Hors Docker sans ces variables : rendu console lisible. **`LOG_LEVEL`** pilote le seuil (défaut `INFO`). Les `pytest.ini` des services ajoutent **`pythonpath = ../../shared/podiq_logging`** pour résoudre ce module sans masquer le paquet **`grpc`** (`grpcio`).
 - Ruff for linting, Black for formatting
 - Pytest for tests, target >70% coverage
 - **Application language:** all runtime strings, comments, and docstrings in Python under `services/` (including tests and stubs) are **English**. **README.md** per service and project documentation (e.g. CLAUDE.md narrative) remain **French** as product docs.
@@ -223,6 +223,7 @@ Copy `.env.example` to `.env` and configure:
 - `AI_TIMEOUT_SECONDS` — timeout HTTP ai-service → Ollama (défaut **30** dans le code ; souvent **120** en dev sur CPU)
 - Gateway : Gunicorn est lancé avec **`--timeout 180`** dans `services/gateway/Dockerfile` pour couvrir `analyzeIncident` pendant l’inférence ; sans cela, erreurs HTML/502 côté playground si le worker est tué à 30 s
 - `OLLAMA_MODEL` — en dev, **`mistral`** recommandé pour gros prompts ; modèles type « thinking » peuvent échouer sur `/api/chat` malgré une RAM correcte
+- Logs applicatifs : **`PODIQ_SERVICE_NAME`**, **`LOG_FORMAT=json|console`** et **`LOG_LEVEL`** sont définis dans les **Dockerfiles** des services ; surcharge possible via Compose ou variables passées aux conteneurs.
 
 ## gRPC Communication
 

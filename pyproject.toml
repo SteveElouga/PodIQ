@@ -16,6 +16,8 @@ known-first-party = ["app", "config", "core"]
 
 [tool.ruff.lint.per-file-ignores]
 "**/app/grpc_server.py" = ["E402"]
+"**/config/settings.py" = ["E402"]
+"**/config/settings_pytest.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.12"

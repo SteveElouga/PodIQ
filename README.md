@@ -417,6 +417,8 @@ podiq/
 │   │   ├── analysis.py
 │   │   ├── predeploy.py
 │   │   └── pattern.py
+│   ├── podiq_logging/
+│   │   └── structlog_setup.py       # structlog JSON / console + champ service
 │   └── grpc/                          # stubs gRPC générés
 │
 ├── stubs/                             # paquet local stubs.* → liens vers shared/grpc/
@@ -727,7 +729,7 @@ Application crashes at startup due to missing DATABASE_URL env variable
 | Cache / Queue | Redis | Jobs async, rate limiting, cache API keys |
 | IA locale | Ollama 0.23.2 + qwen2.5-coder:14b | Gratuit, Dockerisable, confidentialité logs — configurable via `OLLAMA_MODEL` |
 | Logs centralisés | Grafana Loki | Cohérent avec produit orienté observabilité |
-| Agent logs | Promtail | Lit stdout Docker → Loki |
+| Agent logs | Promtail | Lit stdout Docker → Loki ; services PodIQ émettent des lignes **JSON** (`structlog`, fichier commun `shared/podiq_logging/structlog_setup.py`) avec `timestamp`, `level`, `service`, `event` pour filtres Grafana/Loki |
 | Visualisation | Grafana | Debug rapide + dashboard incidents |
 | Validation | Pydantic v2 | Parsing IA, schemas typés |
 | YAML parsing | PyYAML | Pre-deploy scanner |

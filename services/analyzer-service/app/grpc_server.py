@@ -1,5 +1,14 @@
 import os
+import sys
 from concurrent import futures
+from pathlib import Path
+
+_repo = Path(__file__).resolve().parents[3]
+_shared = _repo / "shared" / "podiq_logging"
+if _shared.is_dir():
+    _p = str(_shared)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import django
 

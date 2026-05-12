@@ -48,3 +48,7 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True
+
+import structlog_setup
+
+structlog_setup.configure_podiq_logging()

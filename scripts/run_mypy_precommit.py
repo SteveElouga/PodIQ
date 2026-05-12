@@ -27,13 +27,21 @@ def _run_one(name: str, env_extra: dict[str, str], targets: list[str]) -> int:
     if not cwd.is_dir():
         return 0
     env = os.environ.copy()
-    pp = str(REPO)
+    paths = [str(REPO), str(REPO / "shared" / "podiq_logging")]
+    pp = os.pathsep.join(paths)
     if env.get("PYTHONPATH"):
         env["PYTHONPATH"] = pp + os.pathsep + env["PYTHONPATH"]
     else:
         env["PYTHONPATH"] = pp
     env.update(env_extra)
-    cmd = [sys.executable, "-m", "mypy", "--config-file", str(REPO / "pyproject.toml"), *targets]
+    cmd = [
+        sys.executable,
+        "-m",
+        "mypy",
+        "--config-file",
+        str(REPO / "pyproject.toml"),
+        *targets,
+    ]
     proc = subprocess.run(cmd, cwd=str(cwd), env=env)
     return int(proc.returncode)
 
@@ -50,24 +58,24 @@ def main() -> int:
         "auth-service": (
             {
                 "DJANGO_SETTINGS_MODULE": "config.settings_pytest",
-                "JWT_SECRET": "pytest-jwt-secret-not-for-production-min-32-bytes",
-                "DJANGO_SECRET_KEY": "pytest-auth-django-secret-not-for-production",
+                "JWT_SECRET": "pytest-jwt-secret-not-for-production-min-32-bytes",  # pragma: allowlist secret
+                "DJANGO_SECRET_KEY": "pytest-auth-django-secret-not-for-production",  # pragma: allowlist secret
             },
             ["app", "core", "config", "tests"],
         ),
         "ai-service": (
             {
                 "DJANGO_SETTINGS_MODULE": "config.settings",
-                "DATABASE_URL": "postgresql://podiq:podiq@localhost:5434/podiq_ai",
-                "DJANGO_SECRET_KEY": "pytest-ai-django-secret-not-for-production",
+                "DATABASE_URL": "postgresql://podiq:podiq@localhost:5434/podiq_ai",  # pragma: allowlist secret
+                "DJANGO_SECRET_KEY": "pytest-ai-django-secret-not-for-production",  # pragma: allowlist secret
             },
             ["app", "core", "config", "tests"],
         ),
         "analyzer-service": (
             {
                 "DJANGO_SETTINGS_MODULE": "config.settings",
-                "DATABASE_URL": "postgresql://podiq:podiq@localhost:5434/podiq_analyzer",
-                "DJANGO_SECRET_KEY": "pytest-analyzer-django-secret-not-for-production",
+                "DATABASE_URL": "postgresql://podiq:podiq@localhost:5434/podiq_analyzer",  # pragma: allowlist secret
+                "DJANGO_SECRET_KEY": "pytest-analyzer-django-secret-not-for-production",  # pragma: allowlist secret
             },
             ["app", "core", "config", "tests"],
         ),
