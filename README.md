@@ -652,7 +652,7 @@ Application crashes at startup due to missing DATABASE_URL env variable
 Django==5.2.1
 djangorestframework==3.16.0
 strawberry-graphql[django]==0.262.5
-psycopg[binary]==3.2.9
+psycopg[binary]==3.2.13
 redis==6.0.0
 dramatiq[redis]==1.18.0
 grpcio==1.73.0
@@ -670,7 +670,7 @@ gunicorn==23.0.0
 
 ```txt
 Django==5.2.1
-psycopg[binary]==3.2.9
+psycopg[binary]==3.2.13
 grpcio==1.73.0
 protobuf==6.31.1
 kubernetes==32.0.1
@@ -684,7 +684,7 @@ pydantic==2.11.4
 
 ```txt
 Django==5.2.1
-psycopg[binary]==3.2.9
+psycopg[binary]==3.2.13
 grpcio==1.73.0
 protobuf==6.31.1
 httpx==0.28.1
@@ -697,7 +697,7 @@ pydantic==2.11.4
 
 ```txt
 Django==5.2.1
-psycopg[binary]==3.2.9
+psycopg[binary]==3.2.13
 PyJWT==2.10.1
 grpcio==1.73.0
 protobuf==6.31.1

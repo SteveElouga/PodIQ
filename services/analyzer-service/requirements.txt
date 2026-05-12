@@ -1,5 +1,5 @@
 Django==5.2.1
-psycopg[binary]==3.2.9
+psycopg[binary]==3.2.13
 grpcio==1.80.0
 protobuf==6.31.1
 kubernetes==32.0.1
