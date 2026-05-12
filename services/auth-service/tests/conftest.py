@@ -1,6 +1,16 @@
+import os
 import sys
 import types
 from pathlib import Path
+
+os.environ.setdefault(
+    "JWT_SECRET",
+    "pytest-jwt-secret-not-for-production-min-32-bytes",
+)
+os.environ.setdefault(
+    "DJANGO_SECRET_KEY",
+    "pytest-auth-django-secret-not-for-production",
+)
 
 _here = Path(__file__).resolve().parent
 _service_root = _here.parent

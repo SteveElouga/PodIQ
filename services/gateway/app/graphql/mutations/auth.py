@@ -1,9 +1,11 @@
 import grpc
 import structlog
+import strawberry
 from strawberry.types import Info
 
 from app.grpc_clients import auth_client
 from app.grpc_errors import GrpcService, raise_graphql_from_grpc
+from app.graphql.types import AuthPayload
 
 logger = structlog.get_logger()
 

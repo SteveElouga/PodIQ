@@ -334,6 +334,18 @@ Le Gateway est le **seul service visible de l'extérieur**. Tous les autres serv
 
 ## Comment tester
 
+### Tests unitaires (pytest)
+
+**Python 3.14** en local est pris en charge : Strawberry est installé depuis une archive GitHub (commit pinné dans `requirements.txt`), nécessaire tant que PyPI ne publie pas ce correctif pour `dataclasses.Field` / **3.14**. L’image Docker reste en **Python 3.12** et utilise le même fichier de dépendances.
+
+```bash
+cd services/gateway
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m pytest -v
+```
+
 ### 1. Démarrer toute la stack
 
 ```bash
