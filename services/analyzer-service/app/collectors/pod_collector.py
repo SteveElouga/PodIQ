@@ -71,7 +71,9 @@ def collect_pod(pod_name: str, namespace: str, log_lines: int = 2000) -> dict[st
     }
 
 
-def _collect_logs(v1: client.CoreV1Api, pod_name: str, namespace: str, log_lines: int) -> str:
+def _collect_logs(
+    v1: client.CoreV1Api, pod_name: str, namespace: str, log_lines: int
+) -> str:
     try:
         return v1.read_namespaced_pod_log(
             name=pod_name,
@@ -79,16 +81,25 @@ def _collect_logs(v1: client.CoreV1Api, pod_name: str, namespace: str, log_lines
             tail_lines=min(log_lines, log_cleaner.MAX_LOG_LINES),
         )
     except ApiException as e:
-        logger.warning("pod_logs_unavailable", pod=pod_name, namespace=namespace, status=e.status)
+        logger.warning(
+            "pod_logs_unavailable", pod=pod_name, namespace=namespace, status=e.status
+        )
         return f"[logs unavailable: {e.reason}]"
 
 
-def _collect_describe(v1: client.CoreV1Api, pod_name: str, namespace: str) -> tuple[str, str]:
+def _collect_describe(
+    v1: client.CoreV1Api, pod_name: str, namespace: str
+) -> tuple[str, str]:
     try:
         pod = v1.read_namespaced_pod(name=pod_name, namespace=namespace)
         return pod.status.phase or "Unknown", _format_describe(pod)
     except ApiException as e:
-        logger.warning("pod_describe_unavailable", pod=pod_name, namespace=namespace, status=e.status)
+        logger.warning(
+            "pod_describe_unavailable",
+            pod=pod_name,
+            namespace=namespace,
+            status=e.status,
+        )
         return "Unknown", f"[describe unavailable: {e.reason}]"
 
 
@@ -100,7 +111,9 @@ def _collect_events(v1: client.CoreV1Api, pod_name: str, namespace: str) -> str:
         )
         return _format_events(event_list.items)
     except ApiException as e:
-        logger.warning("pod_events_unavailable", pod=pod_name, namespace=namespace, status=e.status)
+        logger.warning(
+            "pod_events_unavailable", pod=pod_name, namespace=namespace, status=e.status
+        )
         return f"[events unavailable: {e.reason}]"
 
 
@@ -120,10 +133,14 @@ def _format_describe(pod: Any) -> str:
             if cs.state.waiting.message:
                 lines.append(f"  Message:       {cs.state.waiting.message}")
         elif cs.state.running:
-            lines.append(f"  State:         Running since {cs.state.running.started_at}")
+            lines.append(
+                f"  State:         Running since {cs.state.running.started_at}"
+            )
         elif cs.state.terminated:
             t = cs.state.terminated
-            lines.append(f"  State:         Terminated / {t.reason} (exit {t.exit_code})")
+            lines.append(
+                f"  State:         Terminated / {t.reason} (exit {t.exit_code})"
+            )
     return "\n".join(lines)
 
 

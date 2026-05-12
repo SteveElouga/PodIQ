@@ -10,7 +10,9 @@ def _channel() -> grpc.Channel:
     )
 
 
-def collect_pod(pod_name: str, namespace: str, log_lines: int = 2000) -> analyzer_pb2.PodData:
+def collect_pod(
+    pod_name: str, namespace: str, log_lines: int = 2000
+) -> analyzer_pb2.PodData:
     with _channel() as channel:
         stub = analyzer_pb2_grpc.AnalyzerServiceStub(channel)
         return stub.CollectPod(
@@ -22,7 +24,9 @@ def collect_pod(pod_name: str, namespace: str, log_lines: int = 2000) -> analyze
         )
 
 
-def scan_namespace(namespace: str, timestamp: int = 0) -> analyzer_pb2.NamespaceSnapshot:
+def scan_namespace(
+    namespace: str, timestamp: int = 0
+) -> analyzer_pb2.NamespaceSnapshot:
     with _channel() as channel:
         stub = analyzer_pb2_grpc.AnalyzerServiceStub(channel)
         return stub.ScanNamespace(
@@ -33,7 +37,9 @@ def scan_namespace(namespace: str, timestamp: int = 0) -> analyzer_pb2.Namespace
         )
 
 
-def parse_manifest(yaml_content: str, manifest_type: str = "") -> analyzer_pb2.ParsedManifest:
+def parse_manifest(
+    yaml_content: str, manifest_type: str = ""
+) -> analyzer_pb2.ParsedManifest:
     with _channel() as channel:
         stub = analyzer_pb2_grpc.AnalyzerServiceStub(channel)
         return stub.ParseManifest(

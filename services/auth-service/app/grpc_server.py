@@ -4,7 +4,7 @@ import os
 import secrets
 import uuid
 from concurrent import futures
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 
 import django
 
@@ -16,8 +16,8 @@ import jwt
 import structlog
 from django.utils import timezone as tz
 
+from core.models import ApiKey, User
 from stubs.auth import auth_pb2, auth_pb2_grpc
-from core.models import User, ApiKey
 
 logger = structlog.get_logger()
 
@@ -26,6 +26,7 @@ JWT_EXPIRY_MINUTES = int(os.environ.get("JWT_EXPIRY_MINUTES", "1440"))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _hash_password(password: str) -> str:
     pepper = os.environ.get("DJANGO_SECRET_KEY", "")
@@ -40,8 +41,8 @@ def _generate_token(user_id: str, email: str) -> str:
     payload = {
         "user_id": user_id,
         "email": email,
-        "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRY_MINUTES),
+        "iat": datetime.now(UTC),
+        "exp": datetime.now(UTC) + timedelta(minutes=JWT_EXPIRY_MINUTES),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
@@ -51,6 +52,7 @@ def _hash_api_key(raw_key: str) -> str:
 
 
 # ── Servicer ──────────────────────────────────────────────────────────────────
+
 
 class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
 
@@ -77,7 +79,9 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
         )
         token = _generate_token(str(user.id), user.email)
         logger.info("auth_register_ok", user_id=str(user.id))
-        return auth_pb2.AuthResponse(user_id=str(user.id), token=token, email=user.email)
+        return auth_pb2.AuthResponse(
+            user_id=str(user.id), token=token, email=user.email
+        )
 
     def Login(
         self,
@@ -100,7 +104,9 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
 
         token = _generate_token(str(user.id), user.email)
         logger.info("auth_login_ok", user_id=str(user.id))
-        return auth_pb2.AuthResponse(user_id=str(user.id), token=token, email=user.email)
+        return auth_pb2.AuthResponse(
+            user_id=str(user.id), token=token, email=user.email
+        )
 
     def ValidateJWT(
         self,
@@ -192,6 +198,7 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
+
 
 def serve() -> None:
     port = os.environ.get("GRPC_PORT", "50051")

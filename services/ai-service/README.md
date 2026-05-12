@@ -324,7 +324,7 @@ Gateway ──gRPC──▶ AI Service ──HTTP──▶ Ollama (Mistral 7B)
                       └──▶ postgres-ai
 ```
 
-Ce service est **appelé par** le Gateway.  
+Ce service est **appelé par** le Gateway.
 Ce service **appelle** Ollama (via HTTP) et sa propre base de données.
 
 ---

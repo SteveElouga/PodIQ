@@ -3,8 +3,9 @@ analyzeIncident mutation tests.
 All gRPC clients are mocked; no database required.
 require_auth is mocked to simulate an authenticated user.
 """
+
 from types import SimpleNamespace
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 MOCK_USER_ID = "user-uuid-test"
 
@@ -15,8 +16,14 @@ def make_empty_history_response():
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def make_pod_data(pod_name="my-pod", namespace="default", status="CrashLoopBackOff",
-                  logs="error: db not found", events="BackOff restarting"):
+
+def make_pod_data(
+    pod_name="my-pod",
+    namespace="default",
+    status="CrashLoopBackOff",
+    logs="error: db not found",
+    events="BackOff restarting",
+):
     return SimpleNamespace(
         pod_name=pod_name,
         namespace=namespace,
@@ -56,19 +63,39 @@ def make_analysis_result(
 
 # ── analyzeIncident ───────────────────────────────────────────────────────────
 
+
 class TestAnalyzeIncidentMutation:
     def _run(self, pod_data=None, ns_snapshot=None, ai_result=None):
         pod_data = pod_data or make_pod_data()
         ns_snapshot = ns_snapshot or make_namespace_snapshot()
         ai_result = ai_result or make_analysis_result()
 
-        with patch("app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID), \
-             patch("app.graphql.mutations.analyze.analyzer_client.collect_pod", return_value=pod_data), \
-             patch("app.graphql.mutations.analyze.analyzer_client.scan_namespace", return_value=ns_snapshot), \
-             patch("app.graphql.mutations.analyze.ai_client.get_history", return_value=make_empty_history_response()), \
-             patch("app.graphql.mutations.analyze.ai_client.analyze_incident", return_value=ai_result):
+        with (
+            patch(
+                "app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID
+            ),
+            patch(
+                "app.graphql.mutations.analyze.analyzer_client.collect_pod",
+                return_value=pod_data,
+            ),
+            patch(
+                "app.graphql.mutations.analyze.analyzer_client.scan_namespace",
+                return_value=ns_snapshot,
+            ),
+            patch(
+                "app.graphql.mutations.analyze.ai_client.get_history",
+                return_value=make_empty_history_response(),
+            ),
+            patch(
+                "app.graphql.mutations.analyze.ai_client.analyze_incident",
+                return_value=ai_result,
+            ),
+        ):
 
-            from app.graphql.mutations.analyze import _analyze_incident as analyze_incident
+            from app.graphql.mutations.analyze import (
+                _analyze_incident as analyze_incident,
+            )
+
             return analyze_incident(info=None, pod_name="my-pod", namespace="default")
 
     def test_returns_analysis_result_type(self):
@@ -105,25 +132,63 @@ class TestAnalyzeIncidentMutation:
         assert result.correlation_explanation == "OOMKilled 5 min before"
 
     def test_collect_pod_called_with_correct_args(self):
-        with patch("app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID), \
-             patch("app.graphql.mutations.analyze.analyzer_client.collect_pod", return_value=make_pod_data()) as mock_collect, \
-             patch("app.graphql.mutations.analyze.analyzer_client.scan_namespace", return_value=make_namespace_snapshot()), \
-             patch("app.graphql.mutations.analyze.ai_client.get_history", return_value=make_empty_history_response()), \
-             patch("app.graphql.mutations.analyze.ai_client.analyze_incident", return_value=make_analysis_result()):
+        with (
+            patch(
+                "app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID
+            ),
+            patch(
+                "app.graphql.mutations.analyze.analyzer_client.collect_pod",
+                return_value=make_pod_data(),
+            ) as mock_collect,
+            patch(
+                "app.graphql.mutations.analyze.analyzer_client.scan_namespace",
+                return_value=make_namespace_snapshot(),
+            ),
+            patch(
+                "app.graphql.mutations.analyze.ai_client.get_history",
+                return_value=make_empty_history_response(),
+            ),
+            patch(
+                "app.graphql.mutations.analyze.ai_client.analyze_incident",
+                return_value=make_analysis_result(),
+            ),
+        ):
 
-            from app.graphql.mutations.analyze import _analyze_incident as analyze_incident
+            from app.graphql.mutations.analyze import (
+                _analyze_incident as analyze_incident,
+            )
+
             analyze_incident(info=None, pod_name="target-pod", namespace="staging")
 
         mock_collect.assert_called_once_with(pod_name="target-pod", namespace="staging")
 
     def test_scan_namespace_called_with_correct_namespace(self):
-        with patch("app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID), \
-             patch("app.graphql.mutations.analyze.analyzer_client.collect_pod", return_value=make_pod_data()), \
-             patch("app.graphql.mutations.analyze.analyzer_client.scan_namespace", return_value=make_namespace_snapshot()) as mock_ns, \
-             patch("app.graphql.mutations.analyze.ai_client.get_history", return_value=make_empty_history_response()), \
-             patch("app.graphql.mutations.analyze.ai_client.analyze_incident", return_value=make_analysis_result()):
+        with (
+            patch(
+                "app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID
+            ),
+            patch(
+                "app.graphql.mutations.analyze.analyzer_client.collect_pod",
+                return_value=make_pod_data(),
+            ),
+            patch(
+                "app.graphql.mutations.analyze.analyzer_client.scan_namespace",
+                return_value=make_namespace_snapshot(),
+            ) as mock_ns,
+            patch(
+                "app.graphql.mutations.analyze.ai_client.get_history",
+                return_value=make_empty_history_response(),
+            ),
+            patch(
+                "app.graphql.mutations.analyze.ai_client.analyze_incident",
+                return_value=make_analysis_result(),
+            ),
+        ):
 
-            from app.graphql.mutations.analyze import _analyze_incident as analyze_incident
+            from app.graphql.mutations.analyze import (
+                _analyze_incident as analyze_incident,
+            )
+
             analyze_incident(info=None, pod_name="my-pod", namespace="production")
 
         call_kwargs = mock_ns.call_args[1]
@@ -133,7 +198,12 @@ class TestAnalyzeIncidentMutation:
         """Peers appear in namespace_context; the analyzed pod does not."""
         ref = 1_700_000_000
         pods = [
-            SimpleNamespace(pod_name="my-pod", status="Running", has_errors=False, last_restart_time=0),
+            SimpleNamespace(
+                pod_name="my-pod",
+                status="Running",
+                has_errors=False,
+                last_restart_time=0,
+            ),
             SimpleNamespace(
                 pod_name="other-pod",
                 status="CrashLoopBackOff",
@@ -149,13 +219,32 @@ class TestAnalyzeIncidentMutation:
             captured["ctx"] = list(request.namespace_context)
             return make_analysis_result()
 
-        with patch("app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID), \
-             patch("app.graphql.mutations.analyze.analyzer_client.collect_pod", return_value=make_pod_data(pod_name="my-pod")), \
-             patch("app.graphql.mutations.analyze.analyzer_client.scan_namespace", return_value=ns_snapshot), \
-             patch("app.graphql.mutations.analyze.ai_client.get_history", return_value=make_empty_history_response()), \
-             patch("app.graphql.mutations.analyze.ai_client.analyze_incident", side_effect=capture_request):
+        with (
+            patch(
+                "app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID
+            ),
+            patch(
+                "app.graphql.mutations.analyze.analyzer_client.collect_pod",
+                return_value=make_pod_data(pod_name="my-pod"),
+            ),
+            patch(
+                "app.graphql.mutations.analyze.analyzer_client.scan_namespace",
+                return_value=ns_snapshot,
+            ),
+            patch(
+                "app.graphql.mutations.analyze.ai_client.get_history",
+                return_value=make_empty_history_response(),
+            ),
+            patch(
+                "app.graphql.mutations.analyze.ai_client.analyze_incident",
+                side_effect=capture_request,
+            ),
+        ):
 
-            from app.graphql.mutations.analyze import _analyze_incident as analyze_incident
+            from app.graphql.mutations.analyze import (
+                _analyze_incident as analyze_incident,
+            )
+
             analyze_incident(info=None, pod_name="my-pod", namespace="default")
 
         pod_names_in_ctx = [p.pod_name for p in captured["ctx"]]
@@ -169,6 +258,8 @@ class TestAnalyzeIncidentMutation:
 class TestAnalyzeIncidentAuth:
     def test_raises_permission_error_without_token(self):
         import pytest
+
         from app.graphql.mutations.analyze import _analyze_incident as analyze_incident
+
         with pytest.raises(PermissionError):
             analyze_incident(info=None, pod_name="pod", namespace="default")

@@ -4,15 +4,17 @@ import strawberry
 import structlog
 from strawberry.types import Info
 
-from app.graphql.types import ManifestScanResultType, RiskItemType
-from app.grpc_clients import analyzer_client, ai_client
 from app.auth import require_auth
+from app.graphql.types import ManifestScanResultType, RiskItemType
+from app.grpc_clients import ai_client, analyzer_client
 from app.grpc_errors import GrpcService, invoke_grpc
 
 logger = structlog.get_logger()
 
 
-def _scan_manifest(info: Info, yaml_content: str, manifest_type: str = "") -> ManifestScanResultType:
+def _scan_manifest(
+    info: Info, yaml_content: str, manifest_type: str = ""
+) -> ManifestScanResultType:
     user_id = require_auth(info)
     logger.info("mutation_scan_manifest", manifest_type=manifest_type, user_id=user_id)
 
@@ -50,5 +52,7 @@ def _scan_manifest(info: Info, yaml_content: str, manifest_type: str = "") -> Ma
 
 
 @strawberry.mutation
-def scan_manifest(info: Info, yaml_content: str, manifest_type: str = "") -> ManifestScanResultType:
+def scan_manifest(
+    info: Info, yaml_content: str, manifest_type: str = ""
+) -> ManifestScanResultType:
     return _scan_manifest(info, yaml_content, manifest_type)

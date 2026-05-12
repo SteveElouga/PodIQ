@@ -1,6 +1,6 @@
 from collections.abc import Callable
 from enum import StrEnum
-from typing import TypeVar
+from typing import NoReturn, TypeVar
 
 import grpc
 import structlog
@@ -75,7 +75,7 @@ def _default_message(service: GrpcService, status: grpc.StatusCode) -> str:
     return "AI service request failed"
 
 
-def raise_graphql_from_grpc(exc: grpc.RpcError, service: GrpcService) -> None:
+def raise_graphql_from_grpc(exc: grpc.RpcError, service: GrpcService) -> NoReturn:
     status = exc.code()
     podiq_code = _podiq_code(service, status)
     details = (exc.details() or "").strip()

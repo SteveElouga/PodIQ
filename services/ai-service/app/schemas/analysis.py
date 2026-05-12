@@ -1,5 +1,3 @@
-from typing import Optional
-
 from pydantic import BaseModel, field_validator
 
 _VALID_CONFIDENCE = {"high", "medium", "low"}
@@ -12,8 +10,8 @@ class AnalysisResponse(BaseModel):
     solution: str
     confidence: str
     is_recurring: bool
-    correlated_service: Optional[str] = None
-    correlation_explanation: Optional[str] = None
+    correlated_service: str | None = None
+    correlation_explanation: str | None = None
 
     @field_validator("confidence", mode="before")
     @classmethod
@@ -24,7 +22,7 @@ class AnalysisResponse(BaseModel):
 
     @field_validator("correlated_service", "correlation_explanation", mode="before")
     @classmethod
-    def empty_null(cls, v: object) -> Optional[str]:
+    def empty_null(cls, v: object) -> str | None:
         if v in (None, "null", ""):
             return None
         return str(v)

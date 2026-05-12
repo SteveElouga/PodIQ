@@ -4,7 +4,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *_args):  # noqa: D401
+    def log_message(self, *_args):
         return
 
     def do_GET(self) -> None:

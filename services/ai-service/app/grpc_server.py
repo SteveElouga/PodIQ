@@ -12,12 +12,12 @@ import grpc
 import structlog
 from pydantic import ValidationError
 
-from stubs.ai import ai_pb2, ai_pb2_grpc
 from app.ollama.client import chat
 from app.prompts import incident_prompt, predeploy_prompt
 from app.schemas.analysis import AnalysisResponse
 from app.schemas.predeploy import ManifestScanResponse
 from core.models import Analysis, IncidentPattern
+from stubs.ai import ai_pb2, ai_pb2_grpc
 
 logger = structlog.get_logger()
 
@@ -29,7 +29,9 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
         request: ai_pb2.IncidentRequest,
         context: grpc.ServicerContext,
     ) -> ai_pb2.AnalysisResult:
-        logger.info("analyze_incident", pod=request.pod_name, namespace=request.namespace)
+        logger.info(
+            "analyze_incident", pod=request.pod_name, namespace=request.namespace
+        )
 
         try:
             prompt = incident_prompt.build(request)
@@ -64,7 +66,9 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
         request: ai_pb2.HistoryRequest,
         context: grpc.ServicerContext,
     ) -> ai_pb2.HistoryResponse:
-        logger.info("get_analysis_history", pod=request.pod_name, namespace=request.namespace)
+        logger.info(
+            "get_analysis_history", pod=request.pod_name, namespace=request.namespace
+        )
 
         qs = Analysis.objects.filter(
             analysis_type="incident",
@@ -129,6 +133,7 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
 
 # ── Parsing ───────────────────────────────────────────────────────────────────
 
+
 def _extract_json(raw: str) -> str:
     start = raw.find("{")
     end = raw.rfind("}")
@@ -166,7 +171,10 @@ def _parse_scan(raw: str) -> ManifestScanResponse:
 
 # ── Persistence ───────────────────────────────────────────────────────────────
 
-def _save_analysis(request: ai_pb2.IncidentRequest, result: AnalysisResponse) -> Analysis:
+
+def _save_analysis(
+    request: ai_pb2.IncidentRequest, result: AnalysisResponse
+) -> Analysis:
     return Analysis.objects.create(
         user_id=uuid.uuid4(),  # replaced by gateway-provided user_id in full flow
         analysis_type="incident",
@@ -210,6 +218,7 @@ def _get_recurrence_count(pod_name: str, namespace: str, error_type: str) -> int
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
+
 
 def serve() -> None:
     port = os.environ.get("GRPC_PORT", "50053")

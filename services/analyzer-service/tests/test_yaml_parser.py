@@ -2,6 +2,7 @@
 Unit tests for app/parsers/yaml_parser.py.
 Pure functions — no Kubernetes or database dependency.
 """
+
 from app.parsers.yaml_parser import parse_manifest
 
 DEPLOYMENT_YAML = """
