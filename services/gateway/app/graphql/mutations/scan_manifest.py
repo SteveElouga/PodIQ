@@ -1,6 +1,5 @@
 from functools import partial
 
-
 import strawberry
 import structlog
 from strawberry.types import Info
