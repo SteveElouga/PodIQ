@@ -65,6 +65,8 @@ PodIQ is an AI-powered Kubernetes incident intelligence platform. It analyzes po
 
 Chaque service a son propre `pytest.ini`, `PYTHONPATH` implicite (répertoire du service) et `app.*`. **Ne pas** lancer `pytest` depuis la racine du dépôt pour collecter toute l’arborescence : le `pytest.ini` à la racine **ignore** le dossier `services/` pour éviter les erreurs `No module named 'tests.*'`.
 
+Le **gateway** utilise `config.settings_pytest` (SQLite en mémoire, pas besoin de `.env` ni de Postgres pour les tests unitaires).
+
 ```bash
 cd services/gateway && python3 -m pytest -v
 cd services/analyzer-service && python3 -m pytest -v
