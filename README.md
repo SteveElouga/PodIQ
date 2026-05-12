@@ -39,6 +39,55 @@ PodIQ est une plateforme SaaS DevOps qui ne se contente pas d'analyser une erreu
 
 ---
 
+## 0. Démarrage rapide
+
+### Prérequis
+- Docker + Docker Compose installés
+- 16 GB RAM minimum (Ollama + Mistral 7B)
+- Copier `.env.example` → `.env` (les valeurs par défaut fonctionnent en dev)
+
+### Lancer toute la stack
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+### Vérifier que tout est en ordre
+
+```bash
+curl http://localhost:8080/healthz
+# → {"status": "ok"}
+```
+
+### Tester l'analyse d'incident (sans cluster Kubernetes)
+
+`STUB_MODE=true` dans `.env` fait tourner l'analyzer en mode bouchon : il simule un pod en `CrashLoopBackOff` avec des logs fictifs, sans toucher à Kubernetes.
+
+```bash
+# 1. Créer un compte
+curl -s -X POST http://localhost:8080/graphql \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"mutation { register(email: \"demo@podiq.io\", password: \"pass1234\") { token } }"}' \
+  | python3 -m json.tool
+
+# 2. Copier le token puis analyser un pod
+TOKEN="<token_obtenu_ci-dessus>"
+curl -s -X POST http://localhost:8080/graphql \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query":"mutation { analyzeIncident(podName: \"test\", namespace: \"default\") { errorType rootCause solution confidence correlatedService correlationExplanation } }"}' \
+  | python3 -m json.tool
+```
+
+**Résultat attendu :** un objet JSON avec `errorType`, `rootCause`, `solution`, `confidence`, et si un pod voisin est en erreur dans la fenêtre de 15 min : `correlatedService` + `correlationExplanation`.
+
+### Playground GraphQL interactif
+
+Ouvrir **`http://localhost:8080/graphql`** dans le navigateur (header `Authorization: Bearer <token>`).
+
+---
+
 ## 1. Vision produit & positionnement
 
 PodIQ est une **plateforme d'intelligence des incidents Kubernetes**.
@@ -132,10 +181,28 @@ PodIQ n'est pas un wrapper IA sur `kubectl`. C'est une plateforme qui :
 - Détecte les causalités temporelles (fenêtre configurable, défaut 15 min)
 - Affiche : *"postgres-service was OOMKilled 6 minutes before this crash."*
 
+**Comment ça marche en détail :**
+
+1. L'analyzer scanne **tous les pods** du namespace au moment de l'incident et retourne leur statut, leurs erreurs, et leur dernier `restart_time`.
+2. Le gateway construit le **`namespace_context`** : il retire le pod analysé de la liste, puis pour chaque voisin, calcule si son dernier restart tombe **dans la fenêtre de 15 minutes** avant l'incident. Chaque pod reçoit un flag `in_correlation_window`, un champ `seconds_before_reference`, et son statut.
+3. Ce contexte enrichi est transmis à l'AI Service dans le prompt. Le modèle peut alors distinguer une panne **isolée** d'une **dégradation simultanée** dans le namespace et proposer un `correlated_service` avec une `correlation_explanation`.
+
+**Résultat attendu dans la réponse GraphQL :**
+```json
+{
+  "correlatedService": "worker-6b8c",
+  "correlationExplanation": "worker-6b8c had issues 5 minutes before the incident snapshot"
+}
+```
+Si aucun voisin n'est dans la fenêtre : `correlatedService: null`, `correlationExplanation: null`.
+
+**Variable d'environnement :** `CORRELATION_WINDOW_MINUTES` (défaut `15`).
+
 **Implémentation :**
 - `collectors/namespace_scan.py` dans `analyzer-service`
-- Table `namespace_snapshots` PostgreSQL
-- `correlator/temporal.py` dans `ai-service`
+- `app/namespace_correlation.py` dans `gateway` (`build_namespace_context`)
+- Table `namespace_snapshots` PostgreSQL (analyzer-service)
+- Prompt incident (`namespace_context` section) dans `ai-service`
 
 ---
 
@@ -355,7 +422,11 @@ podiq/
 
 ## 8. Services microservices
 
+> **Principe de lecture :** chaque service est comme un **département indépendant d'un hôpital**. Ils ne se parlent qu'en passant par le couloir principal (gRPC), ne partagent pas leurs dossiers (PostgreSQL séparés), et ont chacun leur propre rôle spécialisé.
+
 ### 8.1 Gateway Service
+
+> **Analogie :** La **réceptionniste de l'hôpital**. Elle reçoit le patient (la requête), comprend sa demande, contacte les bons départements dans le bon ordre, et lui remet la réponse finale. Elle ne fait **aucun diagnostic** — elle orchestre et transmet.
 
 **Rôle :** Point d'entrée unique — GraphQL pour l'UI/CLI, REST pour les pipelines CI/CD.
 
@@ -371,6 +442,8 @@ podiq/
 ---
 
 ### 8.2 Analyzer Service
+
+> **Analogie :** Le **technicien de terrain** de l'hôpital. Quand un patient arrive, il va sur place collecter tous les examens bruts : prise de sang (logs), radio (events), fiche d'entrée (describe). Il récupère aussi l'état de toute la salle de soins (namespace) pour voir si d'autres patients autour ont eu des problèmes récemment. Il **ne diagnostique pas** — il collecte et nettoie.
 
 **Rôle :** Interaction exclusive avec Kubernetes + parsing YAML.
 
@@ -388,6 +461,8 @@ podiq/
 
 ### 8.3 AI Service
 
+> **Analogie :** Le **médecin expert** de l'hôpital. Il reçoit tous les examens déjà préparés par le technicien, consulte le dossier médical du patient (mémoire des incidents passés), regarde si d'autres patients dans la même salle ont eu des problèmes récents (corrélation namespace), puis pose un **diagnostic** : cause racine, solution, récurrence, service corrélé.
+
 **Rôle :** Cerveau IA + Memory Engine + Corrélateur temporel.
 
 **Base de données :** `postgres-ai` — `analyses`, `incident_patterns`
@@ -403,6 +478,8 @@ podiq/
 ---
 
 ### 8.4 Auth Service
+
+> **Analogie :** Le **portier de l'hôpital**. Il vérifie les badges (JWT) et les laissez-passer permanents (API Keys pour les pipelines CI/CD). Il ne connaît rien de l'intérieur — son seul rôle est de répondre à la question : *"Est-ce que cette personne a le droit d'entrer ?"*
 
 **Rôle :** Auth utilisateurs + gestion API Keys CI/CD.
 
@@ -651,33 +728,37 @@ Application crashes at startup due to missing DATABASE_URL env variable
 ```txt
 Django==5.2.1
 djangorestframework==3.16.0
-strawberry-graphql[django]==0.315.3
+strawberry-graphql[django] @ https://github.com/strawberry-graphql/strawberry/archive/1eb08b2513798cd42e0f503ab9b430fb0c8b783c.tar.gz
 psycopg[binary]==3.2.13
 redis==6.0.0
 dramatiq[redis]==1.18.0
-grpcio==1.73.0
+grpcio==1.80.0
 protobuf==6.31.1
 python-dotenv==1.1.0
 uvicorn==0.34.2
 structlog==25.4.0
 django-cors-headers==4.7.0
 gunicorn==23.0.0
+pytest==8.3.5
+pytest-django==4.11.1
 ```
 
-> `grpcio-tools`, `PyJWT` et `httpx` ont été retirés — non utilisés dans le gateway.
+> `grpcio-tools`, `PyJWT` et `httpx` ne sont pas utilisés dans le gateway. Strawberry GraphQL est installé depuis une archive GitHub (commit pinné), comme dans `services/gateway/requirements.txt`, pour la compatibilité Python 3.14 en local.
 
 ### Analyzer Service
 
 ```txt
 Django==5.2.1
 psycopg[binary]==3.2.13
-grpcio==1.73.0
+grpcio==1.80.0
 protobuf==6.31.1
 kubernetes==32.0.1
 PyYAML==6.0.2
 python-dotenv==1.1.0
 structlog==25.4.0
 pydantic==2.13.4
+gunicorn==23.0.0
+pytest==8.3.5
 ```
 
 ### AI Service
@@ -685,12 +766,16 @@ pydantic==2.13.4
 ```txt
 Django==5.2.1
 psycopg[binary]==3.2.13
-grpcio==1.73.0
+grpcio==1.80.0
 protobuf==6.31.1
+redis==6.0.0
+ollama==0.4.8
 httpx==0.28.1
 python-dotenv==1.1.0
 structlog==25.4.0
 pydantic==2.13.4
+gunicorn==23.0.0
+pytest==8.3.5
 ```
 
 ### Auth Service
@@ -699,13 +784,15 @@ pydantic==2.13.4
 Django==5.2.1
 psycopg[binary]==3.2.13
 PyJWT==2.10.1
-grpcio==1.73.0
+grpcio==1.80.0
 protobuf==6.31.1
 python-dotenv==1.1.0
 structlog==25.4.0
+pytest==8.3.5
+pytest-django==4.11.1
 ```
 
-> `grpcio-tools` et `gunicorn` ont été retirés — auth-service n'expose que du gRPC, pas d'HTTP.
+> `grpcio-tools` n'est pas dans les `requirements.txt` de service — c'est une dépendance de build uniquement, dans `requirements-dev.txt` à la racine.
 
 ### Dev (racine) — `requirements-dev.txt`
 
@@ -785,6 +872,27 @@ Nginx utilise `resolver 127.0.0.11` (DNS interne Docker) avec une variable `$gat
 | Services Python x4 | ~1 GB total |
 | **Minimum** | **16 GB RAM** |
 | **Recommandé** | **32 GB RAM** |
+
+---
+
+## 13.5 Mode développement sans cluster Kubernetes — STUB_MODE
+
+Par défaut (`STUB_MODE=false`), l'**analyzer-service** appelle le **vrai cluster Kubernetes** via `kubectl`. En développement local sans cluster, mettre **`STUB_MODE=true`** dans `.env`.
+
+**Ce que STUB_MODE fait :**
+- `collect_pod()` retourne des **logs et événements fictifs** : un pod en `CrashLoopBackOff`, des erreurs de connexion à Postgres, 7 restarts. Le nom du pod fourni par l'appelant est conservé, le reste est simulé.
+- `scan_namespace()` retourne une **liste fictive de 3 pods** dans le namespace demandé :
+  - `api-gateway-7d9f` — Running, pas d'erreur
+  - `worker-6b8c` — CrashLoopBackOff, `last_restart_time = maintenant − 300s` (dans la fenêtre de corrélation)
+  - `redis-0` — Running, pas d'erreur
+
+**Ce qui reste réel même en STUB_MODE :**
+- Le gateway orchestre toujours tous les appels dans le bon ordre
+- La corrélation namespace est calculée avec les vraies règles (fenêtre, tri, `in_correlation_window`)
+- L'AI Service envoie un **vrai prompt** à **Ollama** et reçoit une vraie réponse du modèle
+- La mémoire des incidents est lue et écrite en base
+
+**En production / staging :** toujours `STUB_MODE=false` (ou absent). L'analyzer utilise le kubeconfig monté dans le conteneur.
 
 ---
 
