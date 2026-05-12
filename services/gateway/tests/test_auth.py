@@ -40,17 +40,17 @@ class TestRequireAuth:
             require_auth(make_info("Bearer "))
 
     def test_raises_when_jwt_is_invalid(self):
-        response = make_jwt_response(valid=False, error="Token expiré")
+        response = make_jwt_response(valid=False, error="Token expired")
         with patch("app.auth.auth_client.validate_jwt", return_value=response):
             from app.auth import require_auth
-            with pytest.raises(PermissionError, match="Token expiré"):
+            with pytest.raises(PermissionError, match="Token expired"):
                 require_auth(make_info("Bearer expired-token"))
 
     def test_raises_with_fallback_message_when_error_is_empty(self):
         response = make_jwt_response(valid=False, error="")
         with patch("app.auth.auth_client.validate_jwt", return_value=response):
             from app.auth import require_auth
-            with pytest.raises(PermissionError, match="invalide"):
+            with pytest.raises(PermissionError, match="Invalid or expired token"):
                 require_auth(make_info("Bearer bad-token"))
 
     def test_returns_user_id_when_token_is_valid(self):
