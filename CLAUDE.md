@@ -86,7 +86,11 @@ Tous les services (sans Postgres pour gateway ni auth-service en tests unitaires
 
 À la racine du dépôt : `pip install -r requirements-dev.txt`, puis `pre-commit install`. Les hooks appliquent notamment Black, Ruff, détection de secrets (`detect-secrets` avec `.secrets.baseline`), yamllint, hadolint sur les Dockerfiles et mypy sur les paquets Python des services Django (`scripts/run_mypy_precommit.py`). Le répertoire `stubs/` du clone contient des liens symboliques vers `shared/grpc/` pour que les imports `stubs.*` utilisés par les services soient résolus par les outils locaux.
 
-Vérification manuelle une fois : `pre-commit run --all-files`.
+- `pre-commit run` **sans argument** ne s’exécute que sur les fichiers **déjà dans l’index** (`git add`) ; si l’index ne contient aucun fichier concerné, la sortie « no files to check » est normale.
+- Pour une validation sur tout le dépôt : `pre-commit run --all-files`.
+- Si **detect-secrets** signale une mise à jour de `.secrets.baseline` (décalages de lignes), régénérer ou mettre à jour la baseline comme documenté dans le dépôt, puis **stager** le fichier avant de recommitter.
+
+Vérification manuelle ponctuelle : `pre-commit run --all-files`.
 
 ### Tests unitaires dans un conteneur Docker
 

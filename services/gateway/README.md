@@ -346,6 +346,8 @@ pip install -r requirements.txt
 python -m pytest -v
 ```
 
+Les contrôles **pre-commit** (Black, Ruff, mypy, etc.) s’exécutent depuis la **racine du dépôt** ; voir le README racine § « Pré-commit » et `pre-commit install`.
+
 ### 1. Démarrer toute la stack
 
 ```bash

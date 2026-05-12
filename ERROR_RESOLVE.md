@@ -292,3 +292,29 @@ Le code extrait le sous-texte du **premier `{` au dernier `}`** avant parse et v
 Ne pas supposer une réponse JSON « pure » de tous les modèles Ollama ; prévoir une extraction tolérante ou un log explicite.
 
 ---
+
+## [2026-05-12] pre-commit — « no files to check » ou secrets / baseline
+
+**Symptôme**
+- `pre-commit run` affiche « Skipped » / « no files to check » pour Black, Ruff, etc.
+
+**Cause**
+Sans **`--all-files`**, pre-commit ne traite **que les fichiers déjà stagés** (`git add`). Index vide ⇒ aucun fichier à passer aux hooks.
+
+**Solution**
+- Avant un commit : **`git add`** les fichiers concernés puis **`pre-commit run`** (ou laisser le hook au **`git commit`** le faire).
+- Pour tout le dépôt : **`pre-commit run --all-files`**.
+
+**Symptôme**
+- Hook **detect-secrets** : message indiquant que **`.secrets.baseline`** a été mis à jour (souvent après déplacement de lignes dans un fichier déjà référencé).
+
+**Solution**
+- Vérifier les entrées, **`git add .secrets.baseline`**, recommitter. En cas de **nouveau** secret réel, le retirer du code ou l’auditer selon la procédure Yelp detect-secrets ; ne pas valider à l’aveugle une baseline élargie.
+
+**Symptôme**
+- Premier **`pre-commit run --all-files`** long : installation des environnements isolés (dont dépendances agrégées pour **mypy**).
+
+**Cause**
+Normal ; les environnements sont mis en cache sous `~/.cache/pre-commit`.
+
+---

@@ -257,6 +257,15 @@ Ce service **ne connaît pas** l'AI Service — c'est le Gateway qui orchestre.
 
 ## Comment tester
 
+### Tests unitaires (pytest)
+
+```bash
+cd services/analyzer-service
+python3 -m pytest -v
+```
+
+Les hooks **pre-commit** du dépôt incluent **mypy** sur ce service lorsque des fichiers Python sous `services/analyzer-service/` sont stagés ; configuration à la racine (`pyproject.toml`, `scripts/run_mypy_precommit.py`). Voir le README racine § « Pré-commit ».
+
 ### Sans cluster Kubernetes — STUB_MODE
 
 Si tu n'as pas de cluster K8s disponible, active le mode stub dans ton `.env` :
