@@ -4,6 +4,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PY="${PYTHON:-python3}"
 run() {
   local dir="$1"
+  shift
   echo "==> $dir"
   (cd "$ROOT/$dir" && exec "$PY" -m pytest "$@")
 }
