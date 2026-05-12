@@ -1,6 +1,6 @@
 """
-Tests unitaires des builders de prompts incident et predeploy.
-Les objets protobuf sont importés depuis shared/grpc via conftest.py.
+Unit tests for the incident and predeploy prompt builders.
+Protobuf objects are imported from shared/grpc via conftest.py.
 """
 from stubs.ai import ai_pb2
 
