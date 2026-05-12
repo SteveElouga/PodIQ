@@ -65,7 +65,9 @@ PodIQ is an AI-powered Kubernetes incident intelligence platform. It analyzes po
 
 Chaque service a son propre `pytest.ini`, `PYTHONPATH` implicite (répertoire du service) et `app.*`. **Ne pas** lancer `pytest` depuis la racine du dépôt pour collecter toute l’arborescence : le `pytest.ini` à la racine **ignore** le dossier `services/` pour éviter les erreurs `No module named 'tests.*'`.
 
-Le **gateway** utilise `config.settings_pytest` (SQLite en mémoire, pas besoin de `.env` ni de Postgres pour les tests unitaires).
+Le **gateway** utilise `config.settings_pytest` (SQLite en mémoire, pas besoin de `.env` ni de Postgres pour les tests unitaires). Le fichier `tests/conftest.py` enregistre le paquet `stubs` vers `shared/grpc` (même disposition que dans l’image Docker).
+
+Pour **Python 3.14** en local, utiliser les versions à jour du `requirements.txt` du gateway (notamment **Strawberry GraphQL** ≥ 0.31 — compatibilité `dataclasses` / `Field`).
 
 ```bash
 cd services/gateway && python3 -m pytest -v

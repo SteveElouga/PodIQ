@@ -125,10 +125,10 @@ class TestScanManifestAuth:
             scan_manifest(info=None, yaml_content="apiVersion: v1", manifest_type="Pod")
 
     def test_block_risk_level_propagated(self):
-        result = self._run(scan_result=make_scan_result(risk_level="block", summary="Dangerous config"))
+        result = TestScanManifestMutation()._run(scan_result=make_scan_result(risk_level="block", summary="Dangerous config"))
         assert result.risk_level == "block"
 
     def test_risk_fix_is_propagated(self):
         risks = [make_risk(fix="kubectl set image deployment/app app=nginx:1.25")]
-        result = self._run(scan_result=make_scan_result(risks=risks))
+        result = TestScanManifestMutation()._run(scan_result=make_scan_result(risks=risks))
         assert "nginx:1.25" in result.risks[0].fix

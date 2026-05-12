@@ -651,7 +651,7 @@ Application crashes at startup due to missing DATABASE_URL env variable
 ```txt
 Django==5.2.1
 djangorestframework==3.16.0
-strawberry-graphql[django]==0.262.5
+strawberry-graphql[django]==0.315.3
 psycopg[binary]==3.2.13
 redis==6.0.0
 dramatiq[redis]==1.18.0

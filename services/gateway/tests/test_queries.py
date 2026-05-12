@@ -112,14 +112,6 @@ class TestAnalysisHistoryQuery:
         call_kwargs = mock_fn.call_args[1]
         assert call_kwargs["limit"] == 10
 
-
-class TestAnalysisHistoryAuth:
-    def test_raises_permission_error_without_token(self):
-        import pytest
-        from app.graphql.queries.history import _analysis_history as analysis_history
-        with pytest.raises(PermissionError):
-            analysis_history(info=None, pod_name="pod", namespace="ns")
-
     def test_multiple_items_preserve_order(self):
         ts_old = int(time.time()) - 3600
         ts_new = int(time.time())
@@ -130,3 +122,11 @@ class TestAnalysisHistoryAuth:
         result = self._run(items=items)
         assert result[0].id == "new"
         assert result[1].id == "old"
+
+
+class TestAnalysisHistoryAuth:
+    def test_raises_permission_error_without_token(self):
+        import pytest
+        from app.graphql.queries.history import _analysis_history as analysis_history
+        with pytest.raises(PermissionError):
+            analysis_history(info=None, pod_name="pod", namespace="ns")
