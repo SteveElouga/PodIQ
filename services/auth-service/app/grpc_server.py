@@ -63,12 +63,12 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
 
         if not request.email or not request.password:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-            context.set_details("Email et mot de passe requis")
+            context.set_details("Email and password are required")
             return auth_pb2.AuthResponse()
 
         if User.objects.filter(email=request.email).exists():
             context.set_code(grpc.StatusCode.ALREADY_EXISTS)
-            context.set_details("Cet email est déjà enregistré")
+            context.set_details("This email is already registered")
             return auth_pb2.AuthResponse()
 
         user = User.objects.create(
@@ -90,12 +90,12 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
             user = User.objects.get(email=request.email)
         except User.DoesNotExist:
             context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details("Email ou mot de passe invalide")
+            context.set_details("Invalid email or password")
             return auth_pb2.AuthResponse()
 
         if not _verify_password(request.password, user.password_hash):
             context.set_code(grpc.StatusCode.UNAUTHENTICATED)
-            context.set_details("Email ou mot de passe invalide")
+            context.set_details("Invalid email or password")
             return auth_pb2.AuthResponse()
 
         token = _generate_token(str(user.id), user.email)
@@ -115,7 +115,7 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
                 email=payload.get("email", ""),
             )
         except jwt.ExpiredSignatureError:
-            return auth_pb2.ValidateJWTResponse(valid=False, error="Token expiré")
+            return auth_pb2.ValidateJWTResponse(valid=False, error="Token expired")
         except jwt.InvalidTokenError as exc:
             return auth_pb2.ValidateJWTResponse(valid=False, error=str(exc))
 
@@ -130,7 +130,7 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
             user_uuid = uuid.UUID(request.user_id)
         except ValueError:
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-            context.set_details("user_id invalide")
+            context.set_details("Invalid user_id")
             return auth_pb2.ApiKeyResponse()
 
         raw_key = secrets.token_urlsafe(32)
@@ -158,7 +158,7 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
             api_key = ApiKey.objects.get(key_hash=key_hash, is_active=True)
         except ApiKey.DoesNotExist:
             return auth_pb2.ValidateApiKeyResponse(
-                valid=False, error="Clé API invalide ou révoquée"
+                valid=False, error="Invalid or revoked API key"
             )
 
         api_key.last_used = tz.now()
@@ -185,7 +185,7 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
 
         if not updated:
             context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details("Clé introuvable ou déjà révoquée")
+            context.set_details("API key not found or already revoked")
             return auth_pb2.RevokeApiKeyResponse(success=False)
 
         return auth_pb2.RevokeApiKeyResponse(success=True)

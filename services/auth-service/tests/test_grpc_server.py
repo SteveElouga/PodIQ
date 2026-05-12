@@ -184,13 +184,13 @@ class TestLogin:
         c.set_code.assert_called_once_with(grpc.StatusCode.NOT_FOUND)
 
     def test_login_error_message_is_generic(self, servicer, user):
-        """Le message d'erreur ne révèle pas si c'est l'email ou le mot de passe."""
+        """Error text must not reveal whether email or password was wrong."""
         c = ctx()
         servicer.Login(
             auth_pb2.LoginRequest(email="existing@test.com", password="wrong"), c
         )
         call_args = c.set_details.call_args[0][0]
-        assert "email" in call_args.lower() or "mot de passe" in call_args.lower()
+        assert "email" in call_args.lower() or "password" in call_args.lower()
         assert "existing@test.com" not in call_args
 
 
