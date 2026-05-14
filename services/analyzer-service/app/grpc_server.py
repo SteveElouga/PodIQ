@@ -3,12 +3,19 @@ import sys
 from concurrent import futures
 from pathlib import Path
 
-_repo = Path(__file__).resolve().parents[3]
-_shared = _repo / "shared" / "podiq_logging"
-if _shared.is_dir():
-    _p = str(_shared)
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+_docker_setup = Path("/app/structlog_setup.py")
+if _docker_setup.is_file():
+    _root_app = str(_docker_setup.parent)
+    if _root_app not in sys.path:
+        sys.path.insert(0, _root_app)
+else:
+    for _ancestor in Path(__file__).resolve().parents:
+        _candidate = _ancestor / "shared" / "podiq_logging" / "structlog_setup.py"
+        if _candidate.is_file():
+            _pkg = str(_candidate.parent)
+            if _pkg not in sys.path:
+                sys.path.insert(0, _pkg)
+            break
 
 import django
 
