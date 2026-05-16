@@ -267,6 +267,12 @@ Le Gateway maintient un client gRPC léger pour chaque service backend.
 
 Chaque appel gRPC ouvre un canal dédié (simple, sans pool — à optimiser avec Redis en Étape 11).
 
+### Processus HTTP et timeout Gunicorn
+
+Le conteneur démarre Gunicorn avec **`--timeout 180`** (voir `Dockerfile`). Une mutation comme `analyzeIncident` attend la fin de l’inférence Ollama dans l’ai-service ; cette durée peut dépasser la valeur par défaut de Gunicorn (**30 s**), ce qui tuait le worker, provoquait une erreur côté Nginx et une réponse **HTML** au lieu de JSON pour le playground.
+
+Le timeout Gunicorn doit rester **au moins égal** à (ou supérieur à) le timeout HTTP Ollama côté ai-service (`AI_TIMEOUT_SECONDS` dans `.env`, souvent **120** s en dev sur CPU).
+
 ---
 
 ## Variables d'environnement
@@ -283,6 +289,25 @@ Chaque appel gRPC ouvre un canal dédié (simple, sans pool — à optimiser ave
 | `AUTH_GRPC_PORT`       | Non         | `50051`      | Port de l'auth-service                    |
 | `REDIS_URL`            | Non         | —            | `redis://redis:6379/0` (futur — Dramatiq) |
 | `CORS_ALLOWED_ORIGINS` | Non         | `*`          | Origins autorisées (CORS)                 |
+
+### Authentification des endpoints protégés
+
+Les mutations `analyzeIncident`, `scanManifest` et la query `analysisHistory` requièrent un JWT valide dans le header HTTP :
+
+```
+Authorization: Bearer <token>
+```
+
+Le token est obtenu via `login` ou `register` (mutations GraphQL publiques).
+
+En interne, le helper `app/auth.py::require_auth(info)` extrait le token, appelle **`auth-service` via gRPC** (`ValidateJWT`) et retourne le `user_id` si valide. En cas d'absence ou d'invalidité, une `PermissionError` est levée → GraphQL retourne une erreur `UNAUTHORIZED`.
+
+Les mutations `register` et `login` restent **publiques** (aucun token requis).
+
+### Dépannage rapide GraphQL
+
+- **`Unexpected token '<', "<html>..." is not valid JSON`** : le navigateur reçoit du HTML (souvent **502**). Causes fréquentes : worker Gunicorn tué (timeout trop court — reconstruire l’image gateway après changement du `Dockerfile`), ou Nginx qui ne joint plus le gateway (voir `ERROR_RESOLVE.md`, résolution DNS `127.0.0.11`).
+- **`grpc_message: "timed out"`** : dépassement côté ai-service / Ollama — augmenter `AI_TIMEOUT_SECONDS`, vérifier les logs `ai-service` et `ollama`, modèle recommandé **`mistral`** pour les longs prompts (voir `services/ai-service/README.md`).
 
 ---
 

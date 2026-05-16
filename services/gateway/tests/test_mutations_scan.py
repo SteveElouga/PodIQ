@@ -1,9 +1,12 @@
 """
 Tests de la mutation scanManifest.
 Les clients gRPC sont entièrement mockés.
+require_auth est mocké pour simuler un utilisateur authentifié.
 """
 from types import SimpleNamespace
 from unittest.mock import patch
+
+MOCK_USER_ID = "user-uuid-test"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -55,7 +58,8 @@ class TestScanManifestMutation:
         parsed = parsed or make_parsed_manifest()
         scan_result = scan_result or make_scan_result()
 
-        with patch("app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest", return_value=parsed), \
+        with patch("app.graphql.mutations.scan_manifest.require_auth", return_value=MOCK_USER_ID), \
+             patch("app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest", return_value=parsed), \
              patch("app.graphql.mutations.scan_manifest.ai_client.scan_manifest", return_value=scan_result):
 
             from app.graphql.mutations.scan_manifest import _scan_manifest as scan_manifest
@@ -84,7 +88,8 @@ class TestScanManifestMutation:
 
     def test_parse_manifest_called_with_yaml_content(self):
         yaml = "apiVersion: v1\nkind: Pod"
-        with patch("app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest",
+        with patch("app.graphql.mutations.scan_manifest.require_auth", return_value=MOCK_USER_ID), \
+             patch("app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest",
                    return_value=make_parsed_manifest()) as mock_parse, \
              patch("app.graphql.mutations.scan_manifest.ai_client.scan_manifest",
                    return_value=make_scan_result()):
@@ -102,13 +107,22 @@ class TestScanManifestMutation:
             captured["manifest"] = kwargs.get("parsed_manifest") or args[0]
             return make_scan_result()
 
-        with patch("app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest", return_value=parsed), \
+        with patch("app.graphql.mutations.scan_manifest.require_auth", return_value=MOCK_USER_ID), \
+             patch("app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest", return_value=parsed), \
              patch("app.graphql.mutations.scan_manifest.ai_client.scan_manifest", side_effect=capture):
 
             from app.graphql.mutations.scan_manifest import _scan_manifest as scan_manifest
             scan_manifest(info=None, yaml_content=SAMPLE_YAML, manifest_type="Deployment")
 
         assert captured["manifest"] == '{"image":"nginx:1.25"}'
+
+
+class TestScanManifestAuth:
+    def test_raises_permission_error_without_token(self):
+        import pytest
+        from app.graphql.mutations.scan_manifest import _scan_manifest as scan_manifest
+        with pytest.raises(PermissionError):
+            scan_manifest(info=None, yaml_content="apiVersion: v1", manifest_type="Pod")
 
     def test_block_risk_level_propagated(self):
         result = self._run(scan_result=make_scan_result(risk_level="block", summary="Dangerous config"))

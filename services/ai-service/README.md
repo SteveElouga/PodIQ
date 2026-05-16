@@ -289,7 +289,16 @@ POST http://ollama:11434/api/chat
 }
 ```
 
-Le paramètre `format: "json"` est crucial : il indique à Mistral de produire **uniquement** du JSON valide, sans texte autour.
+Le paramètre `format: "json"` guide Ollama vers du JSON, mais certains modèles ajoutent encore du texte ou des blocs Markdown autour du JSON.
+
+### Extraction et validation de la réponse
+
+Après la réponse HTTP, le service **extrait le premier `{` jusqu’au dernier `}`** du corps texte avant `json.loads` et validation Pydantic (`AnalysisResponse`, `ManifestScanResponse`). Cela limite les échecs lorsque le modèle entoure le JSON de prose ou de fences Markdown.
+
+### Choix du modèle (dev local)
+
+- **`mistral`** (tag `mistral` / `mistral:latest`) est le choix documenté pour PodIQ : bon compromis pour des prompts longs (logs + historique + contexte namespace) et le format JSON.
+- Les variantes **« thinking »** (ex. certains tags **qwen3**) peuvent générer beaucoup de tokens intermédiaires et provoquer des échecs ou des **HTTP 500** côté Ollama sur les gros prompts, même avec une RAM suffisante. En cas de problème, revenir à **`OLLAMA_MODEL=mistral`** après `ollama pull mistral` dans le conteneur Ollama.
 
 ---
 
@@ -300,8 +309,8 @@ Le paramètre `format: "json"` est crucial : il indique à Mistral de produire *
 | `DATABASE_URL`            | Oui         | —                   | `postgresql://user:pass@postgres-ai/db` |
 | `DJANGO_SECRET_KEY`       | Oui         | —                   | Clé secrète Django                      |
 | `OLLAMA_HOST`             | Non         | `http://ollama:11434`| URL du serveur Ollama                  |
-| `OLLAMA_MODEL`            | Non         | `mistral`           | Modèle Ollama à utiliser                |
-| `AI_TIMEOUT_SECONDS`      | Non         | `60`                | Timeout des appels Ollama               |
+| `OLLAMA_MODEL`            | Non         | `mistral`           | Modèle Ollama (nom tel équivalent `ollama list`) |
+| `AI_TIMEOUT_SECONDS`      | Non         | `30`                | Timeout HTTP client vers Ollama (s) — souvent **120** en dev CPU |
 | `INCIDENT_HISTORY_DEPTH`  | Non         | `5`                 | Nombre d'incidents passés dans le prompt|
 | `GRPC_PORT`               | Non         | `50053`             | Port d'écoute gRPC                      |
 

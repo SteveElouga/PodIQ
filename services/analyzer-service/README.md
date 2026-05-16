@@ -228,13 +228,14 @@ private_key=<valeur>    → private_key=***
 
 ## Variables d'environnement
 
-| Variable             | Obligatoire | Défaut   | Description                                    |
-|----------------------|-------------|----------|------------------------------------------------|
-| `DATABASE_URL`       | Oui         | —        | `postgresql://user:pass@postgres-analyzer/db`  |
-| `DJANGO_SECRET_KEY`  | Oui         | —        | Clé secrète Django                             |
-| `KUBECONFIG`         | Non         | —        | Chemin vers kubeconfig (hors cluster)          |
-| `MAX_LOG_LINES`      | Non         | `2000`   | Nombre maximal de lignes de logs à conserver   |
-| `GRPC_PORT`          | Non         | `50052`  | Port d'écoute gRPC                             |
+| Variable             | Obligatoire | Défaut   | Description                                                             |
+|----------------------|-------------|----------|-------------------------------------------------------------------------|
+| `DATABASE_URL`       | Oui         | —        | `postgresql://user:pass@postgres-analyzer/db`                           |
+| `DJANGO_SECRET_KEY`  | Oui         | —        | Clé secrète Django                                                      |
+| `KUBECONFIG`         | Non         | —        | Chemin vers kubeconfig (hors cluster)                                   |
+| `MAX_LOG_LINES`      | Non         | `2000`   | Nombre maximal de lignes de logs à conserver                            |
+| `GRPC_PORT`          | Non         | `50052`  | Port d'écoute gRPC                                                      |
+| `STUB_MODE`          | Non         | `false`  | Si `true`, retourne des données K8s fictives — développement sans cluster |
 
 ---
 
@@ -254,6 +255,30 @@ Ce service **ne connaît pas** l'AI Service — c'est le Gateway qui orchestre.
 
 ## Comment tester
 
+### Sans cluster Kubernetes — STUB_MODE
+
+Si tu n'as pas de cluster K8s disponible, active le mode stub dans ton `.env` :
+
+```env
+STUB_MODE=true
+```
+
+En mode stub, `CollectPod` retourne un pod fictif en `CrashLoopBackOff` (erreur de connexion DB) et `ScanNamespace` retourne un namespace avec 3 pods fictifs. Le reste du pipeline (AI Service → Ollama) s'exécute normalement.
+
+```bash
+docker compose up -d --build analyzer-service
+```
+
+Vérifie les logs — tu dois voir `collect_pod_stub` ou `scan_namespace_stub` à la place de `collect_pod` :
+
+```bash
+docker compose logs analyzer-service | grep "stub"
+```
+
+### Avec un vrai cluster Kubernetes
+
+Mets `STUB_MODE=false` dans `.env` et assure-toi que le kubeconfig est accessible.
+
 ### 1. Démarrer les dépendances
 
 ```bash
@@ -263,13 +288,11 @@ docker compose logs -f analyzer-service
 
 ### 2. Tester via une analyse complète
 
-Le meilleur test est de lancer une analyse complète depuis le playground GraphQL :
-
 ```bash
 docker compose up -d  # toute la stack
 ```
 
-Puis :
+Puis depuis le playground GraphQL `http://localhost:8080/graphql` :
 
 ```graphql
 mutation {

@@ -138,3 +138,157 @@ return hmac.compare_digest(...)
 `hmac.compare_digest(a, b)` pour la comparaison en temps constant. `hashlib` sert uniquement à hacher (sha256, etc.).
 
 ---
+
+## [2026-05-11] GraphQL Playground — "The string did not match the expected pattern"
+
+**Erreur**
+```json
+{
+  "errors": [
+    {
+      "message": "The string did not match the expected pattern.",
+      "stack": "json@[native code]\n@https://unpkg.com/graphiql@3.0.9/graphiql.min.js:71272:61"
+    }
+  ]
+}
+```
+
+**Service concerné** : `gateway` (visible dans le playground GraphiQL)
+
+**Cause**
+Erreur trompeuse — elle vient du navigateur qui tente de parser la réponse HTTP en JSON. En réalité le serveur retournait un **502 Bad Gateway** (page HTML), pas du JSON.
+
+Nginx retournait 502 car il essayait de contacter le gateway à une ancienne adresse IP (`172.19.0.9`) qui n'existait plus. Après un redémarrage du container gateway, Docker lui avait attribué une nouvelle IP (`172.19.0.12`), mais Nginx gardait l'IP résolue au démarrage en cache (comportement du bloc `upstream` statique).
+
+**Solution**
+Remplacer le bloc `upstream` statique par une résolution DNS dynamique via le resolver Docker interne dans `infra/nginx/default.conf` :
+
+```nginx
+# Avant — résolution DNS unique au démarrage de Nginx
+upstream gateway_upstream {
+    server gateway:8000;
+    keepalive 32;
+}
+location / {
+    proxy_pass http://gateway_upstream;
+}
+
+# Après — re-résolution à chaque requête via le DNS Docker
+resolver 127.0.0.11 valid=10s ipv6=off;
+set $gateway_upstream http://gateway:8000;
+location / {
+    proxy_pass $gateway_upstream;
+}
+```
+
+Puis redémarrer Nginx pour appliquer :
+```bash
+docker compose restart nginx
+```
+
+**Règle à retenir**
+Dans Docker Compose, ne jamais utiliser un bloc `upstream` Nginx avec un hostname de service — l'IP est résolue une seule fois et mise en cache. Toujours utiliser `resolver 127.0.0.11` avec une variable pour forcer la re-résolution dynamique, ce qui garantit la résilience aux redémarrages de containers.
+
+---
+
+## [2026-05-11] analyzeIncident échoue sans cluster Kubernetes
+
+**Erreur**
+```
+grpc._channel._InactiveRpcError: StatusCode.INTERNAL
+Details: [Errno 111] Connection refused / No such file or directory: ~/.kube/config
+```
+
+**Service concerné** : `analyzer-service` → propagé au `gateway`
+
+**Cause**
+La mutation `analyzeIncident` appelle `CollectPod` dans l'analyzer-service, qui tente de charger la configuration Kubernetes (`load_incluster_config()` puis `load_kube_config()`). Sans cluster Kubernetes ni fichier `~/.kube/config`, les deux tentatives échouent et le service retourne une erreur gRPC INTERNAL.
+
+**Solution**
+Ajouter `STUB_MODE=true` dans `.env`. En mode stub, `collect_pod()` et `scan_namespace()` retournent des données fictives réalistes (pod en CrashLoopBackOff, namespace avec 3 pods) sans appeler Kubernetes. Le reste du pipeline (AI Service → Ollama) s'exécute normalement.
+
+```env
+# .env
+STUB_MODE=true
+```
+
+```bash
+docker compose up -d --build analyzer-service
+```
+
+Vérifier l'activation :
+```bash
+docker compose logs analyzer-service | grep "stub"
+# → collect_pod_stub ou scan_namespace_stub
+```
+
+**Règle à retenir**
+`STUB_MODE=true` est réservé au développement local sans cluster. Toujours mettre `STUB_MODE=false` (ou ne pas le définir) en environnement de staging/production avec un vrai cluster.
+
+---
+
+## [2026-05-11] GraphQL — `Unexpected token '<'` / JSON invalide après `analyzeIncident`
+
+**Erreur (navigateur / playground)**
+
+```
+Unexpected token '<', "<html>..." is not valid JSON
+```
+
+**Service concerné** : `gateway` (réponse HTTP non-JSON)
+
+**Cause fréquente**
+Gunicorn tue le worker qui traite la requête après **30 s** par défaut, alors que `analyzeIncident` attend souvent **plus longtemps** la réponse de l’ai-service (Ollama). Le worker plante, Nginx renvoie une page d’erreur **HTML** ; le client GraphQL tente de parser ce HTML comme du JSON.
+
+**Solution**
+Le `Dockerfile` du gateway lance Gunicorn avec **`--timeout 180`**. Reconstruire l’image après mise à jour :
+
+```bash
+docker compose up -d --build gateway
+```
+
+Aligner si besoin `AI_TIMEOUT_SECONDS` dans `.env` (ex. **120**) et vérifier les logs Ollama / ai-service pour d’autres causes de lenteur.
+
+**Règle à retenir**
+Le timeout worker Gunicorn doit être **≥** la durée maximale acceptable d’une mutation longue (ici surtout l’inférence IA).
+
+---
+
+## [2026-05-11] Ollama — HTTP 500 à ~30 s sur `/api/chat`, logs `ollama_timeout`
+
+**Erreur**
+- Logs `ai-service` : `ollama_timeout`, `analyze_incident_failed error='timed out'`
+- Logs `ollama` : `POST "/api/chat" ... | 500 | 30.00xs`
+
+**Service concerné** : `ai-service` → `ollama`
+
+**Cause possible (plusieurs)**
+1. **`AI_TIMEOUT_SECONDS`** trop bas pour la machine (CPU seul, modèle lourd) — augmenter dans `.env` (ex. **120**) et `docker compose up -d --force-recreate ai-service`.
+2. Modèle **« thinking »** ou très bavard sur un **prompt volumineux** (logs + historique + namespace) : Ollama peut échouer ou dépasser des limites internes avant la fin de la génération utile.
+3. Mémoire Docker insuffisante pour le modèle (moins fréquent si `ollama list` montre le modèle chargé et des `/api/chat` **200** sur de petits tests).
+
+**Solution**
+- Utiliser **`OLLAMA_MODEL=mistral`** (après `docker compose exec ollama ollama pull mistral`), cohérent avec le tag listé par `ollama list` (`mistral:latest`).
+- Augmenter **`AI_TIMEOUT_SECONDS`** pour le dev sur CPU.
+
+**Règle à retenir**
+Pour valider le pipeline incident, privilégier **mistral** ; documenter tout autre modèle avec ses contraintes (taille de contexte, « thinking », temps de réponse).
+
+---
+
+## [2026-05-11] analyzeIncident — `errorType: "Unknown"`, rootCause « AI response could not be parsed »
+
+**Erreur** — réponse GraphQL valide mais diagnostic de repli.
+
+**Service concerné** : `ai-service` (`_parse_incident` dans `app/grpc_server.py`)
+
+**Cause**
+Le modèle renvoie du JSON entouré de texte ou de Markdown (malgré `format: "json"`), ce qui faisait échouer `json.loads` sur la chaîne brute.
+
+**Solution**
+Le code extrait le sous-texte du **premier `{` au dernier `}`** avant parse et validation Pydantic. Si le message persiste, consulter les logs `incident_parse_failed` et la réponse brute Ollama.
+
+**Règle à retenir**
+Ne pas supposer une réponse JSON « pure » de tous les modèles Ollama ; prévoir une extraction tolérante ou un log explicite.
+
+---

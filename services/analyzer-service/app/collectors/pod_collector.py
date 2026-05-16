@@ -1,3 +1,4 @@
+import os
 from typing import Any
 
 import structlog
@@ -8,6 +9,8 @@ from app.parsers import log_cleaner
 
 logger = structlog.get_logger()
 
+STUB_MODE = os.environ.get("STUB_MODE", "false").lower() == "true"
+
 
 def _load_k8s_config() -> None:
     try:
@@ -16,7 +19,41 @@ def _load_k8s_config() -> None:
         config.load_kube_config()
 
 
+def _stub_collect_pod(pod_name: str, namespace: str) -> dict[str, Any]:
+    logger.info("collect_pod_stub", pod=pod_name, namespace=namespace)
+    return {
+        "pod_name": pod_name,
+        "namespace": namespace,
+        "status": "CrashLoopBackOff",
+        "logs": (
+            "ERROR: Failed to connect to database: connection refused (host=postgres, port=5432)\n"
+            "ERROR: Retrying in 5s... (attempt 1/5)\n"
+            "ERROR: Retrying in 5s... (attempt 2/5)\n"
+            "ERROR: Retrying in 5s... (attempt 3/5)\n"
+            "FATAL: Max retries exceeded. Exiting.\n"
+        ),
+        "events": (
+            "2026-05-11T08:00:00Z  [Warning]  BackOff: Back-off restarting failed container\n"
+            "2026-05-11T08:00:10Z  [Warning]  Failed: Error: failed to start container: "
+            "exec: no such file or directory\n"
+        ),
+        "describe_output": (
+            f"Name:       {pod_name}\n"
+            f"Namespace:  {namespace}\n"
+            "Status:     CrashLoopBackOff\n"
+            "Node:       minikube\n\n"
+            "Container: app\n"
+            "  Ready:         False\n"
+            "  Restart Count: 7\n"
+            "  State:         Waiting / CrashLoopBackOff\n"
+            "  Message:       back-off 5m0s restarting failed container\n"
+        ),
+    }
+
+
 def collect_pod(pod_name: str, namespace: str, log_lines: int = 2000) -> dict[str, Any]:
+    if STUB_MODE:
+        return _stub_collect_pod(pod_name, namespace)
     _load_k8s_config()
     v1 = client.CoreV1Api()
 

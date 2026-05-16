@@ -1,3 +1,4 @@
+import os
 import time
 from typing import Any
 
@@ -8,6 +9,7 @@ from kubernetes.client.exceptions import ApiException
 logger = structlog.get_logger()
 
 _ERROR_REASONS = {"CrashLoopBackOff", "OOMKilled", "Error", "ImagePullBackOff", "ErrImagePull"}
+STUB_MODE = os.environ.get("STUB_MODE", "false").lower() == "true"
 
 
 def _load_k8s_config() -> None:
@@ -17,7 +19,22 @@ def _load_k8s_config() -> None:
         config.load_kube_config()
 
 
+def _stub_scan_namespace(namespace: str) -> dict[str, Any]:
+    logger.info("scan_namespace_stub", namespace=namespace)
+    return {
+        "namespace": namespace,
+        "pods": [
+            {"pod_name": "api-gateway-7d9f", "status": "Running", "has_errors": False, "last_restart_time": 0},
+            {"pod_name": "worker-6b8c", "status": "CrashLoopBackOff", "has_errors": True, "last_restart_time": int(time.time()) - 300},
+            {"pod_name": "redis-0", "status": "Running", "has_errors": False, "last_restart_time": 0},
+        ],
+        "collected_at": int(time.time()),
+    }
+
+
 def scan_namespace(namespace: str) -> dict[str, Any]:
+    if STUB_MODE:
+        return _stub_scan_namespace(namespace)
     _load_k8s_config()
     v1 = client.CoreV1Api()
 

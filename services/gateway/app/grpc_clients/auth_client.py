@@ -10,6 +10,12 @@ def _channel() -> grpc.Channel:
     )
 
 
+def validate_jwt(token: str) -> auth_pb2.ValidateJWTResponse:
+    with _channel() as channel:
+        stub = auth_pb2_grpc.AuthServiceStub(channel)
+        return stub.ValidateJWT(auth_pb2.ValidateJWTRequest(token=token))
+
+
 def validate_api_key(raw_key: str) -> auth_pb2.ValidateApiKeyResponse:
     with _channel() as channel:
         stub = auth_pb2_grpc.AuthServiceStub(channel)

@@ -120,6 +120,7 @@ python -m grpc_tools.protoc -I. --python_out=../shared/grpc --grpc_python_out=..
 14. **grpcio-tools is a dev/build dependency only** — never include it in service requirements.txt (only in requirements-dev.txt at root)
 15. **Password hashing uses SHA-256 + Django SECRET_KEY as pepper** — via `hashlib.compare_digest` for timing-attack resistance
 16. **Each service has its own README.md** — must document analogie, gRPC interface, DB schema, env vars, and test procedure in French
+17. **Documentation must always be kept up to date** — any code change that affects behaviour, interface, env vars, or architecture must be reflected immediately in the relevant README.md(s) and in CLAUDE.md. Never leave docs describing a state that no longer matches the code.
 
 ## Redis
 
@@ -168,8 +169,13 @@ Copy `.env.example` to `.env` and configure:
 - `JWT_SECRET` — required (auth-service)
 - `GRAFANA_ADMIN_PASSWORD` — required
 - `OLLAMA_HOST` — defaults to `http://ollama:11434`
+- `STUB_MODE` — `true` makes analyzer-service return fake K8s data (dev without a cluster); always `false` in production
 - gRPC host/port variables for internal service communication
 - Each service has its own `DATABASE_URL` pointing to its dedicated postgres container
+- `REDIS_MAXMEMORY` — limite mémoire du conteneur Redis (ex. `256mb` en dev), utilisée par `docker-compose` avec `--maxmemory-policy allkeys-lru`
+- `AI_TIMEOUT_SECONDS` — timeout HTTP ai-service → Ollama (défaut **30** dans le code ; souvent **120** en dev sur CPU)
+- Gateway : Gunicorn est lancé avec **`--timeout 180`** dans `services/gateway/Dockerfile` pour couvrir `analyzeIncident` pendant l’inférence ; sans cela, erreurs HTML/502 côté playground si le worker est tué à 30 s
+- `OLLAMA_MODEL` — en dev, **`mistral`** recommandé pour gros prompts ; modèles type « thinking » peuvent échouer sur `/api/chat` malgré une RAM correcte
 
 ## gRPC Communication
 

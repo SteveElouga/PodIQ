@@ -129,9 +129,17 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
 
 # ── Parsing ───────────────────────────────────────────────────────────────────
 
+def _extract_json(raw: str) -> str:
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return raw[start : end + 1]
+    return raw
+
+
 def _parse_incident(raw: str) -> AnalysisResponse:
     try:
-        return AnalysisResponse.model_validate(json.loads(raw))
+        return AnalysisResponse.model_validate(json.loads(_extract_json(raw)))
     except (json.JSONDecodeError, ValidationError) as exc:
         logger.warning("incident_parse_failed", error=str(exc), raw_preview=raw[:200])
         return AnalysisResponse(
@@ -146,7 +154,7 @@ def _parse_incident(raw: str) -> AnalysisResponse:
 
 def _parse_scan(raw: str) -> ManifestScanResponse:
     try:
-        return ManifestScanResponse.model_validate(json.loads(raw))
+        return ManifestScanResponse.model_validate(json.loads(_extract_json(raw)))
     except (json.JSONDecodeError, ValidationError) as exc:
         logger.warning("scan_parse_failed", error=str(exc), raw_preview=raw[:200])
         return ManifestScanResponse(
