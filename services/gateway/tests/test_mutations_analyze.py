@@ -1,265 +1,242 @@
 """
 analyzeIncident mutation tests.
-All gRPC clients are mocked; no database required.
-require_auth is mocked to simulate an authenticated user.
+Mutation now enqueues a Dramatiq task and returns a job_id immediately.
+gRPC clients and Dramatiq actor are fully mocked.
 """
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 MOCK_USER_ID = "user-uuid-test"
+MOCK_JOB_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 
-def make_empty_history_response():
-    return SimpleNamespace(items=[])
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-def make_pod_data(
-    pod_name="my-pod",
-    namespace="default",
-    status="CrashLoopBackOff",
-    logs="error: db not found",
-    events="BackOff restarting",
-):
+def make_info(token: str | None = "Bearer test-token") -> Any:
+    headers: dict = {}
+    if token:
+        headers["Authorization"] = token
     return SimpleNamespace(
-        pod_name=pod_name,
-        namespace=namespace,
-        status=status,
-        logs=logs,
-        events=events,
+        context=SimpleNamespace(request=SimpleNamespace(headers=headers))
     )
 
 
-def make_namespace_snapshot(pods=None, collected_at=0):
-    return SimpleNamespace(pods=pods or [], collected_at=collected_at)
+def make_job(
+    job_id: str = MOCK_JOB_ID,
+    status: str = "pending",
+    result: dict | None = None,
+    error: str = "",
+) -> MagicMock:
+    job = MagicMock()
+    job.id = job_id
+    job.status = status
+    job.result = result
+    job.error = error
+    job.created_at.isoformat.return_value = "2026-05-16T12:00:00"
+    return job
 
 
-def make_analysis_result(
-    error_type="CrashLoopBackOff",
-    root_cause="Missing DATABASE_URL",
-    explanation="Pod crashes on startup",
-    solution="Add DATABASE_URL to secret",
-    confidence="high",
-    is_recurring=False,
-    recurrence_count=0,
-    correlated_service="",
-    correlation_explanation="",
-):
-    return SimpleNamespace(
-        error_type=error_type,
-        root_cause=root_cause,
-        explanation=explanation,
-        solution=solution,
-        confidence=confidence,
-        is_recurring=is_recurring,
-        recurrence_count=recurrence_count,
-        correlated_service=correlated_service,
-        correlation_explanation=correlation_explanation,
-    )
+# ── analyzeIncident mutation ──────────────────────────────────────────────────
 
 
-# ── analyzeIncident ───────────────────────────────────────────────────────────
-
-
+@pytest.mark.django_db
 class TestAnalyzeIncidentMutation:
-    def _run(self, pod_data=None, ns_snapshot=None, ai_result=None):
-        pod_data = pod_data or make_pod_data()
-        ns_snapshot = ns_snapshot or make_namespace_snapshot()
-        ai_result = ai_result or make_analysis_result()
-
+    def _run(self, job: MagicMock | None = None, user_id: str = MOCK_USER_ID) -> dict:
+        job = job or make_job()
         with (
+            patch("app.graphql.mutations.analyze.require_auth", return_value=user_id),
             patch(
-                "app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID
+                "app.graphql.mutations.analyze.AnalysisJob.objects.create",
+                return_value=job,
             ),
             patch(
-                "app.graphql.mutations.analyze.analyzer_client.collect_pod",
-                return_value=pod_data,
-            ),
-            patch(
-                "app.graphql.mutations.analyze.analyzer_client.scan_namespace",
-                return_value=ns_snapshot,
-            ),
-            patch(
-                "app.graphql.mutations.analyze.ai_client.get_history",
-                return_value=make_empty_history_response(),
-            ),
-            patch(
-                "app.graphql.mutations.analyze.ai_client.analyze_incident",
-                return_value=ai_result,
-            ),
+                "app.graphql.mutations.analyze.analyze_incident_task.send"
+            ) as mock_send,
         ):
+            from app.graphql.mutations.analyze import _analyze_incident
 
-            from app.graphql.mutations.analyze import (
-                _analyze_incident as analyze_incident,
-            )
+            result = _analyze_incident(make_info(), "crashloop-pod", "default")
+            return {"result": result, "send": mock_send}
 
-            return analyze_incident(info=None, pod_name="my-pod", namespace="default")
+    def test_returns_job_id(self):
+        data = self._run()
+        assert str(data["result"].job_id) == MOCK_JOB_ID
 
-    def test_returns_analysis_result_type(self):
-        result = self._run()
-        assert result.error_type == "CrashLoopBackOff"
-        assert result.root_cause == "Missing DATABASE_URL"
-        assert result.solution == "Add DATABASE_URL to secret"
-        assert result.confidence == "high"
+    def test_returns_pending_status(self):
+        data = self._run()
+        assert data["result"].status == "pending"
 
-    def test_is_recurring_false_by_default(self):
-        result = self._run()
-        assert result.is_recurring is False
-        assert result.recurrence_count == 0
+    def test_result_is_none_while_pending(self):
+        data = self._run()
+        assert data["result"].result is None
 
-    def test_is_recurring_true_when_set(self):
-        ai = make_analysis_result(is_recurring=True, recurrence_count=3)
-        result = self._run(ai_result=ai)
-        assert result.is_recurring is True
-        assert result.recurrence_count == 3
+    def test_error_is_none_while_pending(self):
+        data = self._run()
+        assert data["result"].error is None
 
-    def test_correlated_service_is_none_when_empty(self):
-        ai = make_analysis_result(correlated_service="", correlation_explanation="")
-        result = self._run(ai_result=ai)
-        assert result.correlated_service is None
-        assert result.correlation_explanation is None
+    def test_returns_created_at(self):
+        data = self._run()
+        assert data["result"].created_at == "2026-05-16T12:00:00"
 
-    def test_correlated_service_is_set_when_present(self):
-        ai = make_analysis_result(
-            correlated_service="postgres-svc",
-            correlation_explanation="OOMKilled 5 min before",
+    def test_task_is_sent_with_correct_args(self):
+        job = make_job(job_id=MOCK_JOB_ID)
+        data = self._run(job=job)
+        data["send"].assert_called_once_with(
+            MOCK_JOB_ID, MOCK_USER_ID, "crashloop-pod", "default"
         )
-        result = self._run(ai_result=ai)
-        assert result.correlated_service == "postgres-svc"
-        assert result.correlation_explanation == "OOMKilled 5 min before"
 
-    def test_collect_pod_called_with_correct_args(self):
+    def test_job_created_with_user_pod_namespace(self):
         with (
             patch(
                 "app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID
             ),
             patch(
-                "app.graphql.mutations.analyze.analyzer_client.collect_pod",
-                return_value=make_pod_data(),
-            ) as mock_collect,
-            patch(
-                "app.graphql.mutations.analyze.analyzer_client.scan_namespace",
-                return_value=make_namespace_snapshot(),
-            ),
-            patch(
-                "app.graphql.mutations.analyze.ai_client.get_history",
-                return_value=make_empty_history_response(),
-            ),
-            patch(
-                "app.graphql.mutations.analyze.ai_client.analyze_incident",
-                return_value=make_analysis_result(),
-            ),
+                "app.graphql.mutations.analyze.AnalysisJob.objects.create",
+                return_value=make_job(),
+            ) as mock_create,
+            patch("app.graphql.mutations.analyze.analyze_incident_task.send"),
         ):
+            from app.graphql.mutations.analyze import _analyze_incident
 
-            from app.graphql.mutations.analyze import (
-                _analyze_incident as analyze_incident,
-            )
+            _analyze_incident(make_info(), "my-pod", "staging")
 
-            analyze_incident(info=None, pod_name="target-pod", namespace="staging")
-
-        mock_collect.assert_called_once_with(pod_name="target-pod", namespace="staging")
-
-    def test_scan_namespace_called_with_correct_namespace(self):
-        with (
-            patch(
-                "app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID
-            ),
-            patch(
-                "app.graphql.mutations.analyze.analyzer_client.collect_pod",
-                return_value=make_pod_data(),
-            ),
-            patch(
-                "app.graphql.mutations.analyze.analyzer_client.scan_namespace",
-                return_value=make_namespace_snapshot(),
-            ) as mock_ns,
-            patch(
-                "app.graphql.mutations.analyze.ai_client.get_history",
-                return_value=make_empty_history_response(),
-            ),
-            patch(
-                "app.graphql.mutations.analyze.ai_client.analyze_incident",
-                return_value=make_analysis_result(),
-            ),
-        ):
-
-            from app.graphql.mutations.analyze import (
-                _analyze_incident as analyze_incident,
-            )
-
-            analyze_incident(info=None, pod_name="my-pod", namespace="production")
-
-        call_kwargs = mock_ns.call_args[1]
-        assert call_kwargs["namespace"] == "production"
-
-    def test_namespace_context_excludes_analyzed_pod(self):
-        """Peers appear in namespace_context; the analyzed pod does not."""
-        ref = 1_700_000_000
-        pods = [
-            SimpleNamespace(
-                pod_name="my-pod",
-                status="Running",
-                has_errors=False,
-                last_restart_time=0,
-            ),
-            SimpleNamespace(
-                pod_name="other-pod",
-                status="CrashLoopBackOff",
-                has_errors=True,
-                last_restart_time=ref - 400,
-            ),
-        ]
-        ns_snapshot = make_namespace_snapshot(pods=pods, collected_at=ref)
-
-        captured = {}
-
-        def capture_request(request):
-            captured["ctx"] = list(request.namespace_context)
-            return make_analysis_result()
-
-        with (
-            patch(
-                "app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID
-            ),
-            patch(
-                "app.graphql.mutations.analyze.analyzer_client.collect_pod",
-                return_value=make_pod_data(pod_name="my-pod"),
-            ),
-            patch(
-                "app.graphql.mutations.analyze.analyzer_client.scan_namespace",
-                return_value=ns_snapshot,
-            ),
-            patch(
-                "app.graphql.mutations.analyze.ai_client.get_history",
-                return_value=make_empty_history_response(),
-            ),
-            patch(
-                "app.graphql.mutations.analyze.ai_client.analyze_incident",
-                side_effect=capture_request,
-            ),
-        ):
-
-            from app.graphql.mutations.analyze import (
-                _analyze_incident as analyze_incident,
-            )
-
-            analyze_incident(info=None, pod_name="my-pod", namespace="default")
-
-        pod_names_in_ctx = [p.pod_name for p in captured["ctx"]]
-        assert "my-pod" not in pod_names_in_ctx
-        assert "other-pod" in pod_names_in_ctx
-        other = next(p for p in captured["ctx"] if p.pod_name == "other-pod")
-        assert other.in_correlation_window is True
-        assert other.seconds_before_reference == 400
+        mock_create.assert_called_once_with(
+            user_id=MOCK_USER_ID,
+            pod_name="my-pod",
+            namespace="staging",
+        )
 
 
 class TestAnalyzeIncidentAuth:
     def test_raises_permission_error_without_token(self):
-        import pytest
-
-        from app.graphql.mutations.analyze import _analyze_incident as analyze_incident
+        from app.graphql.mutations.analyze import _analyze_incident
 
         with pytest.raises(PermissionError):
-            analyze_incident(info=None, pod_name="pod", namespace="default")
+            _analyze_incident(make_info(token=None), "pod", "ns")
+
+
+# ── Dramatiq task ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.django_db
+class TestAnalyzeIncidentTask:
+    def _make_grpc_results(self) -> tuple:
+        pod_data = SimpleNamespace(
+            pod_name="crashloop-pod",
+            namespace="default",
+            status="CrashLoopBackOff",
+            logs="OOMKilled",
+            events="BackOff",
+        )
+        ns_snapshot = SimpleNamespace(pods=[], collected_at=0)
+        history_response = SimpleNamespace(items=[])
+        ai_result = SimpleNamespace(
+            error_type="OOMKilled",
+            root_cause="Memory limit too low",
+            explanation="Container exceeded memory limit",
+            solution="Increase memory limit",
+            confidence="high",
+            is_recurring=False,
+            recurrence_count=0,
+            correlated_service="",
+            correlation_explanation="",
+        )
+        return pod_data, ns_snapshot, history_response, ai_result
+
+    def test_task_marks_job_complete(self):
+        from core.models import AnalysisJob
+
+        job = AnalysisJob.objects.create(
+            user_id="11111111-1111-1111-1111-111111111111",
+            pod_name="crashloop-pod",
+            namespace="default",
+        )
+        pod_data, ns_snapshot, history_response, ai_result = self._make_grpc_results()
+
+        with (
+            patch(
+                "app.grpc_clients.analyzer_client.collect_pod", return_value=pod_data
+            ),
+            patch(
+                "app.grpc_clients.analyzer_client.scan_namespace",
+                return_value=ns_snapshot,
+            ),
+            patch(
+                "app.grpc_clients.ai_client.get_history", return_value=history_response
+            ),
+            patch(
+                "app.grpc_clients.ai_client.analyze_incident", return_value=ai_result
+            ),
+        ):
+            from app.tasks import analyze_incident_task
+
+            analyze_incident_task(
+                str(job.id), str(job.user_id), job.pod_name, job.namespace
+            )
+
+        job.refresh_from_db()
+        assert job.status == AnalysisJob.Status.COMPLETE
+        assert job.result["error_type"] == "OOMKilled"
+        assert job.result["root_cause"] == "Memory limit too low"
+
+    def test_task_stores_full_result_fields(self):
+        from core.models import AnalysisJob
+
+        job = AnalysisJob.objects.create(
+            user_id="22222222-2222-2222-2222-222222222222",
+            pod_name="my-pod",
+            namespace="staging",
+        )
+        pod_data, ns_snapshot, history_response, ai_result = self._make_grpc_results()
+
+        with (
+            patch(
+                "app.grpc_clients.analyzer_client.collect_pod", return_value=pod_data
+            ),
+            patch(
+                "app.grpc_clients.analyzer_client.scan_namespace",
+                return_value=ns_snapshot,
+            ),
+            patch(
+                "app.grpc_clients.ai_client.get_history", return_value=history_response
+            ),
+            patch(
+                "app.grpc_clients.ai_client.analyze_incident", return_value=ai_result
+            ),
+        ):
+            from app.tasks import analyze_incident_task
+
+            analyze_incident_task(
+                str(job.id), str(job.user_id), job.pod_name, job.namespace
+            )
+
+        job.refresh_from_db()
+        assert "confidence" in job.result
+        assert "is_recurring" in job.result
+        assert "recurrence_count" in job.result
+
+    def test_task_marks_job_failed_on_exception(self):
+        from core.models import AnalysisJob
+
+        job = AnalysisJob.objects.create(
+            user_id="33333333-3333-3333-3333-333333333333",
+            pod_name="bad-pod",
+            namespace="default",
+        )
+
+        with patch(
+            "app.grpc_clients.analyzer_client.collect_pod",
+            side_effect=Exception("gRPC down"),
+        ):
+            from app.tasks import analyze_incident_task
+
+            with pytest.raises(Exception, match="gRPC down"):
+                analyze_incident_task(
+                    str(job.id), str(job.user_id), job.pod_name, job.namespace
+                )
+
+        job.refresh_from_db()
+        assert job.status == AnalysisJob.Status.FAILED
+        assert "gRPC down" in job.error

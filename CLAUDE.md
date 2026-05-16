@@ -270,7 +270,7 @@ python -m grpc_tools.protoc -I. --python_out=../shared/grpc --grpc_python_out=..
 11. ✅ Namespace scan + temporal correlation (`namespace_context` enrichment, `CORRELATION_WINDOW_MINUTES`, `PodContext.in_correlation_window`)
 12. ✅ Pre-deploy scan REST complet
 13. ✅ CI/CD REST endpoint + API Keys (POST /api/v1/cicd/scan)
-14. 🔲 Redis Queue Dramatiq (flux async complet)
+14. ✅ Redis Queue Dramatiq (flux async complet)
 15. 🔲 Dashboard Grafana podiq-overview.json
 16. 🔲 Frontend Angular
 17. 🔲 CLI

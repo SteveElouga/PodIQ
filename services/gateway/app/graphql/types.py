@@ -44,6 +44,15 @@ class AnalysisHistoryItem:
 
 
 @strawberry.type
+class AnalysisJobType:
+    job_id: strawberry.ID
+    status: str  # pending | running | complete | failed
+    result: AnalysisResultType | None
+    error: str | None
+    created_at: str
+
+
+@strawberry.type
 class AuthPayload:
     token: str
     user_id: str
