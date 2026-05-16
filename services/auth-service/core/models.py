@@ -18,7 +18,7 @@ class User(models.Model):
 
 class ApiKey(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    # Référence applicative — pas de FK cross-service
+    # Application-level reference (no cross-service FK)
     user_id = models.UUIDField()
     key_hash = models.CharField(max_length=255)
     name = models.CharField(max_length=100, blank=True)

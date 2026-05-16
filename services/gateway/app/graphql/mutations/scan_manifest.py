@@ -1,5 +1,3 @@
-import json
-
 import strawberry
 import structlog
 from strawberry.types import Info
@@ -22,7 +20,7 @@ def _scan_manifest(info: Info, yaml_content: str, manifest_type: str = "") -> Ma
 
     result = ai_client.scan_manifest(
         parsed_manifest=parsed.raw_config,
-        related_history=[],  # enrichi par le Memory Engine à l'étape 7
+        related_history=[],
     )
 
     return ManifestScanResultType(

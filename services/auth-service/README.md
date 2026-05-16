@@ -115,12 +115,12 @@ token : string  — le JWT à vérifier
 valid   : bool    — true si le token est valide et non expiré
 user_id : string  — extrait du payload
 email   : string  — extrait du payload
-error   : string  — message d'erreur si invalid (ex: "Token expiré")
+error   : string  — erreur si invalid (ex. "Token expired")
 ```
 
 **Ce qui se passe en interne :**
 1. Décode le JWT avec `PyJWT` et `JWT_SECRET`
-2. Si expiré → `valid=false, error="Token expiré"`
+2. Si expiré → `valid=false, error="Token expired"`
 3. Si invalide (mauvaise signature, malformé) → `valid=false, error=...`
 
 ---
@@ -197,7 +197,7 @@ success : bool
 | JWT                         | Algorithme HS256, expiration 24h, signé avec `JWT_SECRET`          |
 | Clés API                    | `secrets.token_urlsafe(32)` — 256 bits d'entropie                  |
 | Stockage des clés API       | Seul le SHA-256 est en base — la clé brute n'est jamais conservée  |
-| Messages d'erreur génériques| Login retourne "Email ou mot de passe invalide" (pas de distinction)|
+| Messages d'erreur génériques| Login retourne `Invalid email or password` (pas de distinction)|
 
 ---
 

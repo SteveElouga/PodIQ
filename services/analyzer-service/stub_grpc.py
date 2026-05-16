@@ -1,4 +1,4 @@
-"""Serveur gRPC vide jusqu’à codegen analyzer."""
+"""Placeholder gRPC server until analyzer codegen is wired."""
 
 from __future__ import annotations
 

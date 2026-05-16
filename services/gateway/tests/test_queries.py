@@ -1,7 +1,7 @@
 """
-Tests de la query analysisHistory.
-Le client gRPC ai_client est entièrement mocké.
-require_auth est mocké pour simuler un utilisateur authentifié.
+analysisHistory query tests.
+The ai_client gRPC client is fully mocked.
+require_auth is mocked to simulate an authenticated user.
 """
 import time
 from types import SimpleNamespace

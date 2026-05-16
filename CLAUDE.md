@@ -142,6 +142,7 @@ Any time code touches Redis — cache reads/writes, Dramatiq queue, rate limitin
 - `structlog` for logging — never `print` or standard `logging`
 - Ruff for linting, Black for formatting
 - Pytest for tests, target >70% coverage
+- **Application language:** all runtime strings, comments, and docstrings in Python under `services/` (including tests and stubs) are **English**. **README.md** per service and project documentation (e.g. CLAUDE.md narrative) remain **French** as product docs.
 
 ## Database Schema
 

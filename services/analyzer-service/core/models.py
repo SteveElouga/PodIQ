@@ -5,7 +5,7 @@ from django.db import models
 
 class LogsSnapshot(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    # Référence applicative vers ai-service — pas de FK cross-service
+    # Application-level reference to ai-service (no cross-service FK)
     analysis_id = models.UUIDField()
     raw_logs = models.TextField(blank=True)
     events = models.TextField(blank=True)
@@ -24,7 +24,7 @@ class LogsSnapshot(models.Model):
 
 class NamespaceSnapshot(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    # Référence applicative vers ai-service — pas de FK cross-service
+    # Application-level reference to ai-service (no cross-service FK)
     analysis_id = models.UUIDField()
     namespace = models.CharField(max_length=255)
     pods_state = models.JSONField()

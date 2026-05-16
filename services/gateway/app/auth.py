@@ -7,28 +7,26 @@ logger = structlog.get_logger()
 
 
 def require_auth(info: Info) -> str:
-    """Valide le JWT fourni dans le header Authorization.
+    """Validate the JWT from the Authorization header via auth-service (ValidateJWT).
 
-    Appelle auth-service via gRPC (ValidateJWT).
-    Retourne le user_id si le token est valide.
-    Lève PermissionError si absent, mal formé ou invalide.
+    Returns user_id when valid. Raises PermissionError if missing, malformed, or invalid.
     """
     header: str = ""
     if info and info.context and hasattr(info.context, "request"):
         header = info.context.request.headers.get("Authorization", "")
 
     if not header.startswith("Bearer "):
-        raise PermissionError("Token manquant ou format invalide (attendu : Bearer <token>)")
+        raise PermissionError("Missing or invalid token format (expected: Bearer <token>)")
 
     token = header.removeprefix("Bearer ").strip()
     if not token:
-        raise PermissionError("Token vide")
+        raise PermissionError("Empty token")
 
     response = auth_client.validate_jwt(token)
 
     if not response.valid:
         logger.warning("jwt_invalid", error=response.error)
-        raise PermissionError(response.error or "Token invalide ou expiré")
+        raise PermissionError(response.error or "Invalid or expired token")
 
     logger.debug("jwt_valid", user_id=response.user_id)
     return response.user_id

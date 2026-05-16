@@ -1,7 +1,7 @@
 """
-Tests de la mutation scanManifest.
-Les clients gRPC sont entièrement mockés.
-require_auth est mocké pour simuler un utilisateur authentifié.
+scanManifest mutation tests.
+gRPC clients are fully mocked.
+require_auth is mocked to simulate an authenticated user.
 """
 from types import SimpleNamespace
 from unittest.mock import patch

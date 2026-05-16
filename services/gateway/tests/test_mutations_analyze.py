@@ -1,7 +1,7 @@
 """
-Tests de la mutation analyzeIncident.
-Tous les clients gRPC sont mockés — aucune base de données requise.
-require_auth est mocké pour simuler un utilisateur authentifié.
+analyzeIncident mutation tests.
+All gRPC clients are mocked; no database required.
+require_auth is mocked to simulate an authenticated user.
 """
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -123,7 +123,7 @@ class TestAnalyzeIncidentMutation:
         assert call_kwargs["namespace"] == "production"
 
     def test_namespace_context_excludes_analyzed_pod(self):
-        """Les autres pods du namespace sont passés en contexte, mais pas le pod analysé."""
+        """Other namespace pods are included in context; the analyzed pod is excluded."""
         pods = [
             SimpleNamespace(pod_name="my-pod", status="Running", has_errors=False, last_restart_time=0),
             SimpleNamespace(pod_name="other-pod", status="CrashLoopBackOff", has_errors=True, last_restart_time=0),
