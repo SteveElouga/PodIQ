@@ -19,7 +19,9 @@ def require_auth(info: Info) -> str:
         header = info.context.request.headers.get("Authorization", "")
 
     if not header.startswith("Bearer "):
-        raise PermissionError("Missing or invalid token format (expected: Bearer <token>)")
+        raise PermissionError(
+            "Missing or invalid token format (expected: Bearer <token>)"
+        )
 
     token = header.removeprefix("Bearer ").strip()
     if not token:
