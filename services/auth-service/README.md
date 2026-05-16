@@ -229,6 +229,15 @@ Gateway ──gRPC──▶ Auth Service ──▶ postgres-auth
 
 ## Comment tester
 
+### Tests unitaires (pytest)
+
+Depuis le répertoire du service : SQLite en mémoire (`config.settings_pytest`), stubs gRPC comme sous Docker. Aucune variable d’environnement obligatoire ; `JWT_SECRET` et `DJANGO_SECRET_KEY` ont des valeurs de secours dans `tests/conftest.py`.
+
+```bash
+cd services/auth-service
+python3 -m pytest -v
+```
+
 ### 1. Démarrer uniquement l'auth-service
 
 ```bash

@@ -19,22 +19,29 @@ def _load_k8s_config() -> None:
         config.load_kube_config()
 
 
-def _stub_scan_namespace(namespace: str) -> dict[str, Any]:
-    logger.info("scan_namespace_stub", namespace=namespace)
+def _stub_scan_namespace(namespace: str, incident_timestamp: int) -> dict[str, Any]:
+    now_ts = int(time.time())
+    ref_ts = incident_timestamp if incident_timestamp > 0 else now_ts
+    logger.info("scan_namespace_stub", namespace=namespace, incident_timestamp=ref_ts)
     return {
         "namespace": namespace,
         "pods": [
             {"pod_name": "api-gateway-7d9f", "status": "Running", "has_errors": False, "last_restart_time": 0},
-            {"pod_name": "worker-6b8c", "status": "CrashLoopBackOff", "has_errors": True, "last_restart_time": int(time.time()) - 300},
+            {
+                "pod_name": "worker-6b8c",
+                "status": "CrashLoopBackOff",
+                "has_errors": True,
+                "last_restart_time": ref_ts - 300,
+            },
             {"pod_name": "redis-0", "status": "Running", "has_errors": False, "last_restart_time": 0},
         ],
-        "collected_at": int(time.time()),
+        "collected_at": ref_ts,
     }
 
 
-def scan_namespace(namespace: str) -> dict[str, Any]:
+def scan_namespace(namespace: str, incident_timestamp: int = 0) -> dict[str, Any]:
     if STUB_MODE:
-        return _stub_scan_namespace(namespace)
+        return _stub_scan_namespace(namespace, incident_timestamp)
     _load_k8s_config()
     v1 = client.CoreV1Api()
 
@@ -46,10 +53,18 @@ def scan_namespace(namespace: str) -> dict[str, Any]:
     except ApiException as e:
         logger.warning("namespace_scan_failed", namespace=namespace, status=e.status, reason=e.reason)
 
+    collected_at = int(time.time())
+    logger.info(
+        "namespace_scan_complete",
+        namespace=namespace,
+        pod_count=len(pods),
+        incident_timestamp=incident_timestamp,
+        collected_at=collected_at,
+    )
     return {
         "namespace": namespace,
         "pods": pods,
-        "collected_at": int(time.time()),
+        "collected_at": collected_at,
     }
 
 

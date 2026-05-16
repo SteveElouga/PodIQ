@@ -1,7 +1,7 @@
 Django==5.2.1
 djangorestframework==3.16.0
-strawberry-graphql[django]==0.262.5
-psycopg[binary]==3.2.9
+strawberry-graphql[django] @ https://github.com/strawberry-graphql/strawberry/archive/1eb08b2513798cd42e0f503ab9b430fb0c8b783c.tar.gz
+psycopg[binary]==3.2.13
 redis==6.0.0
 dramatiq[redis]==1.18.0
 grpcio==1.80.0

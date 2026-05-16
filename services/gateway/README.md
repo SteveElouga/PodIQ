@@ -76,9 +76,11 @@ mutation {
 2. analyzer_client.scan_namespace(namespace, timestamp)
    └── L'analyzer-service liste tous les pods du namespace
 
-3. Construit le namespace_context
-   └── Liste des autres pods du namespace avec leur état (had_issues, issue_timestamp)
-   └── Permet à l'IA de détecter si plusieurs services tombent en même temps (corrélation)
+3. Construit le namespace_context (corrélation temporelle)
+   └── Référence temporelle : instant de l'incident (timestamp `CollectPod`)
+   └── Fenêtre configurable : `CORRELATION_WINDOW_MINUTES` (défaut 15 min) — pods hors fenêtre sont listés mais marqués hors corrélation
+   └── Chaque pod reçoit `in_correlation_window`, `seconds_before_reference` et l’horodatage d’erreur pour le prompt IA
+   └── Permet à l'IA de distinguer une panne isolée d’une dégradation simultanée dans le namespace
 
 4. Memory Engine — ai_client.get_history(pod_name, namespace, limit=5)
    └── Récupère les 5 derniers incidents connus pour ce pod/namespace
@@ -289,6 +291,7 @@ Le timeout Gunicorn doit rester **au moins égal** à (ou supérieur à) le time
 | `AUTH_GRPC_PORT`       | Non         | `50051`      | Port de l'auth-service                    |
 | `REDIS_URL`            | Non         | —            | `redis://redis:6379/0` (futur — Dramatiq) |
 | `CORS_ALLOWED_ORIGINS` | Non         | `*`          | Origins autorisées (CORS)                 |
+| `CORRELATION_WINDOW_MINUTES` | Non   | `15`         | Fenêtre (en minutes) pour marquer les pods « dans la fenêtre de corrélation » avec le pod incident |
 
 ### Authentification des endpoints protégés
 
@@ -330,6 +333,18 @@ Le Gateway est le **seul service visible de l'extérieur**. Tous les autres serv
 ---
 
 ## Comment tester
+
+### Tests unitaires (pytest)
+
+**Python 3.14** en local est pris en charge : Strawberry est installé depuis une archive GitHub (commit pinné dans `requirements.txt`), nécessaire tant que PyPI ne publie pas ce correctif pour `dataclasses.Field` / **3.14**. L’image Docker reste en **Python 3.12** et utilise le même fichier de dépendances.
+
+```bash
+cd services/gateway
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m pytest -v
+```
 
 ### 1. Démarrer toute la stack
 

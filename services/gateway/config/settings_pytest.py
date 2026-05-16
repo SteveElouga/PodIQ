@@ -1,9 +1,8 @@
 import os
-from urllib.parse import urlparse
 
-SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
-DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
-ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,gateway").split(",")
+SECRET_KEY = "pytest-gateway-secret-not-for-production"
+DEBUG = False
+ALLOWED_HOSTS = ["localhost", "127.0.0.1", "gateway"]
 
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
@@ -17,21 +16,15 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "config.urls"
 
-_db = urlparse(os.environ["DATABASE_URL"])
 DATABASES = {
     "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": _db.path.lstrip("/"),
-        "USER": _db.username,
-        "PASSWORD": _db.password,
-        "HOST": _db.hostname,
-        "PORT": _db.port or 5432,
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": ":memory:",
     }
 }
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 
-# Internal gRPC service endpoints
 AUTH_GRPC_HOST = os.environ.get("AUTH_GRPC_HOST", "auth-service")
 AUTH_GRPC_PORT = int(os.environ.get("AUTH_GRPC_PORT", "50051"))
 ANALYZER_GRPC_HOST = os.environ.get("ANALYZER_GRPC_HOST", "analyzer-service")

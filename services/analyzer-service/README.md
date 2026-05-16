@@ -134,6 +134,8 @@ last_restart_time: int64   — timestamp du dernier redémarrage (0 si aucun)
 
 **Détection d'erreurs :** Un pod est marqué `has_errors=true` si son statut contient l'un de ces mots : `CrashLoopBackOff`, `OOMKilled`, `Error`, `ImagePullBackOff`, `ErrImagePull`.
 
+Le client (Gateway) envoie le **timestamp de l’incident** pour aligner les snapshots temporels : l’ai-service reçoit un `namespace_context` où chaque pod peut être situé par rapport à ce moment (voir Gateway, `CORRELATION_WINDOW_MINUTES`).
+
 **Ce qui se passe en interne :**
 
 ```
@@ -263,7 +265,7 @@ Si tu n'as pas de cluster K8s disponible, active le mode stub dans ton `.env` :
 STUB_MODE=true
 ```
 
-En mode stub, `CollectPod` retourne un pod fictif en `CrashLoopBackOff` (erreur de connexion DB) et `ScanNamespace` retourne un namespace avec 3 pods fictifs. Le reste du pipeline (AI Service → Ollama) s'exécute normalement.
+En mode stub, `CollectPod` retourne un pod fictif en `CrashLoopBackOff` (erreur de connexion DB) et `ScanNamespace` retourne un namespace avec 3 pods fictifs, avec des horodatages cohérents avec le `timestamp` reçu pour tester la corrélation temporelle côté Gateway. Le reste du pipeline (AI Service → Ollama) s'exécute normalement.
 
 ```bash
 docker compose up -d --build analyzer-service

@@ -6,11 +6,6 @@
 **/.pytest_cache
 **/.ruff_cache
 
-# Tests
-**/tests/
-**/conftest.py
-**/pytest.ini
-
 # Dev
 .env
 .git

@@ -5,7 +5,12 @@ gRPC clients are fully mocked; no database required.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import grpc
 import pytest
+from graphql import GraphQLError
+
+from app.api_codes import GRAPHQL_EXTENSION_CODE, ErrorCode
+from tests.grpc_fake import FakeRpcError
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -41,17 +46,16 @@ class TestRegisterMutation:
 
         mock_fn.assert_called_once_with(email="alice@test.com", password="secret")
 
-    def test_register_propagates_grpc_error(self):
-        import grpc
-
-        def raise_error(*args, **kwargs):
-            raise grpc.RpcError("ALREADY_EXISTS")
-
-        with patch("app.graphql.mutations.auth.auth_client.register", side_effect=raise_error):
+    def test_register_maps_grpc_to_graphql_error(self):
+        err = FakeRpcError(grpc.StatusCode.ALREADY_EXISTS, "This email is already registered")
+        with patch("app.graphql.mutations.auth.auth_client.register", side_effect=err):
             from app.graphql.mutations.auth import _register as register
 
-            with pytest.raises(grpc.RpcError):
+            with pytest.raises(GraphQLError) as exc_info:
                 register(info=None, email="dup@test.com", password="pass")
+
+        assert exc_info.value.message == "This email is already registered"
+        assert exc_info.value.extensions[GRAPHQL_EXTENSION_CODE] == ErrorCode.CONFLICT.value
 
 
 # ── login ─────────────────────────────────────────────────────────────────────
@@ -81,14 +85,13 @@ class TestLoginMutation:
 
         mock_fn.assert_called_once_with(email="bob@test.com", password="bobpass")
 
-    def test_login_propagates_grpc_error(self):
-        import grpc
-
-        def raise_error(*args, **kwargs):
-            raise grpc.RpcError("UNAUTHENTICATED")
-
-        with patch("app.graphql.mutations.auth.auth_client.login", side_effect=raise_error):
+    def test_login_maps_grpc_to_graphql_error(self):
+        err = FakeRpcError(grpc.StatusCode.UNAUTHENTICATED, "Invalid email or password")
+        with patch("app.graphql.mutations.auth.auth_client.login", side_effect=err):
             from app.graphql.mutations.auth import _login as login
 
-            with pytest.raises(grpc.RpcError):
+            with pytest.raises(GraphQLError) as exc_info:
                 login(info=None, email="x@test.com", password="wrong")
+
+        assert exc_info.value.message == "Invalid email or password"
+        assert exc_info.value.extensions[GRAPHQL_EXTENSION_CODE] == ErrorCode.UNAUTHORIZED.value

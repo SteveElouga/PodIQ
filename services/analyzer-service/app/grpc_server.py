@@ -52,9 +52,12 @@ class AnalyzerServicer(analyzer_pb2_grpc.AnalyzerServiceServicer):
         request: analyzer_pb2.NamespaceRequest,
         context: grpc.ServicerContext,
     ) -> analyzer_pb2.NamespaceSnapshot:
-        logger.info("scan_namespace", namespace=request.namespace)
+        logger.info("scan_namespace", namespace=request.namespace, incident_timestamp=request.timestamp)
         try:
-            result = scan_namespace(namespace=request.namespace)
+            result = scan_namespace(
+                namespace=request.namespace,
+                incident_timestamp=int(request.timestamp),
+            )
         except Exception as exc:
             logger.error("scan_namespace_error", namespace=request.namespace, error=str(exc))
             context.set_code(grpc.StatusCode.INTERNAL)
