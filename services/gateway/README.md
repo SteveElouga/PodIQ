@@ -28,11 +28,10 @@ Il ne fait **aucun appel direct à Kubernetes**, **aucun appel à Ollama**, et *
 
 Ce service possède sa propre instance PostgreSQL : **`postgres-gateway`** (port 5432).
 
-Elle contient uniquement les tables internes à Django :
+Elle contient les tables internes à Django et les jobs d'analyse asynchrones :
 - `django_session` — sessions web (si utilisées)
 - Tables d'administration Django (si activées)
-
-Aucune donnée métier n'est stockée dans cette base.
+- `analysis_jobs` — jobs d'analyse de pods (UUID PK, statut `pending/running/complete/failed`, résultat JSON, erreur texte, horodatages)
 
 ---
 
@@ -46,73 +45,75 @@ Le playground interactif est disponible à la même URL (en GET).
 
 ## Mutations disponibles
 
-### `analyzeIncident` — Analyser un incident Kubernetes
+### `analyzeIncident` — Analyser un incident Kubernetes (asynchrone)
 
-Déclenche une analyse complète d'un pod en échec.
+Déclenche une analyse complète d’un pod en échec. **L’appel retourne immédiatement** un `jobId` ; l’analyse tourne en arrière-plan via Dramatiq. Le client doit ensuite poller `analysisJob(jobId)` pour suivre l’avancement.
 
 **Entrée :**
 ```graphql
 mutation {
   analyzeIncident(podName: "mon-pod", namespace: "default") {
-    errorType
-    rootCause
-    explanation
-    solution
-    confidence
-    isRecurring
-    recurrenceCount
-    correlatedService
-    correlationExplanation
+    jobId
+    status
+    createdAt
   }
 }
 ```
 
-**Ce que le Gateway fait en interne, dans l'ordre :**
+**Ce que le Gateway fait en interne (mutation) :**
 
 ```
-1. analyzer_client.collect_pod(pod_name, namespace)
-   └── L'analyzer-service va chercher logs + events dans Kubernetes
+1. Crée un AnalysisJob en base (status=pending)
+2. Enfile analyze_incident_task via Dramatiq → Redis
+3. Retourne AnalysisJobType{jobId, status="pending", result=null, error=null, createdAt}
+   (retour immédiat — pas d’attente gRPC)
+```
+
+**Ce que le worker Dramatiq fait en arrière-plan (`gateway-worker`) :**
+
+```
+1. analyzer_client.collect_pod(pod_name, namespace)  [status → running]
+   └── L’analyzer-service va chercher logs + events dans Kubernetes
 
 2. analyzer_client.scan_namespace(namespace, timestamp)
-   └── L'analyzer-service liste tous les pods du namespace
+   └── L’analyzer-service liste tous les pods du namespace
 
 3. Construit le namespace_context (corrélation temporelle)
-   └── Référence temporelle : instant de l'incident (timestamp `CollectPod`)
-   └── Fenêtre configurable : `CORRELATION_WINDOW_MINUTES` (défaut 15 min) — pods hors fenêtre sont listés mais marqués hors corrélation
-   └── Chaque pod reçoit `in_correlation_window`, `seconds_before_reference` et l’horodatage d’erreur pour le prompt IA
-   └── Permet à l'IA de distinguer une panne isolée d’une dégradation simultanée dans le namespace
+   └── Fenêtre configurable : CORRELATION_WINDOW_MINUTES (défaut 15 min)
+   └── Chaque pod reçoit in_correlation_window, seconds_before_reference
 
 4. Memory Engine — ai_client.get_history(pod_name, namespace, limit=5)
    └── Récupère les 5 derniers incidents connus pour ce pod/namespace
-   └── Transforme chaque HistoryItem en PastIncident (error_type, root_cause, solution, occurred_at)
-   └── Injecte dans le champ history[] de l'IncidentRequest
-   └── Si aucun historique → history=[] et l'IA traite comme un premier incident
+   └── Transforme en PastIncident[] pour injection dans le prompt IA
 
 5. ai_client.analyze_incident(request avec history injecté)
-   └── L'AI Service construit le prompt avec l'historique inclus
-   └── Ollama voit les incidents passés → peut identifier une récurrence, affiner la cause
-   └── Upsert dans incident_patterns (compteur d'occurrences)
-   └── Retourne le diagnostic enrichi (is_recurring, recurrence_count)
+   └── Ollama voit les incidents passés → identifie récurrences, affine la cause
+   └── Upsert dans incident_patterns (compteur d’occurrences)
 
-6. Retourne AnalysisResultType au client GraphQL
+6. Persiste le résultat → AnalysisJob{status=complete, result={...}}
+   En cas d’erreur → AnalysisJob{status=failed, error="..."}
 ```
 
-**Pourquoi le Memory Engine est dans le Gateway et non dans l'AI Service ?**
-
-Le Gateway est responsable de l'orchestration : il décide dans quel ordre appeler les services et quelles données assembler. L'AI Service reste pur — il reçoit toutes les données déjà préparées et se concentre uniquement sur l'analyse. Cette séparation garantit que l'AI Service est testable indépendamment, sans dépendance à son propre historique.
-
-**Sortie :**
+**Sortie immédiate (mutation) :**
 ```
-errorType              : String  — type d'erreur (ex: "CrashLoopBackOff")
-rootCause              : String  — cause identifiée
-explanation            : String  — explication détaillée
-solution               : String  — actions recommandées
-confidence             : String  — "high" | "medium" | "low"
-isRecurring            : Boolean — pattern déjà connu
-recurrenceCount        : Int     — nombre d'occurrences
-correlatedService      : String  — service lié (null si aucun)
-correlationExplanation : String  — explication de la corrélation (null si aucune)
+jobId     : ID     — UUID du job, à utiliser pour poller
+status    : String — toujours "pending" au retour de la mutation
+result    : null   — pas encore disponible
+error     : null
+createdAt : String — ISO 8601
 ```
+
+**Flux complet côté client :**
+```
+1. mutation analyzeIncident → jobId
+2. query analysisJob(jobId) → status="pending"|"running"  (poller toutes les 2–5 s)
+3. query analysisJob(jobId) → status="complete", result={...}
+   ou                       → status="failed",   error="..."
+```
+
+**Pourquoi le Memory Engine est dans le Gateway et non dans l’AI Service ?**
+
+Le Gateway est responsable de l’orchestration : il décide dans quel ordre appeler les services et quelles données assembler. L’AI Service reste pur — il reçoit toutes les données déjà préparées et se concentre uniquement sur l’analyse.
 
 ---
 
@@ -209,6 +210,45 @@ mutation {
 ---
 
 ## Queries disponibles
+
+### `analysisJob` — Suivre l'état d'un job d'analyse
+
+Retourne l'état courant d'un job créé par `analyzeIncident`. À appeler en polling jusqu'à `status="complete"` ou `"failed"`.
+
+**Entrée :**
+```graphql
+query {
+  analysisJob(jobId: "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb") {
+    jobId
+    status
+    result {
+      errorType
+      rootCause
+      explanation
+      solution
+      confidence
+      isRecurring
+      recurrenceCount
+      correlatedService
+      correlationExplanation
+    }
+    error
+    createdAt
+  }
+}
+```
+
+**Statuts possibles :**
+| `status`    | Signification |
+|-------------|---------------|
+| `pending`   | En attente dans la file Dramatiq |
+| `running`   | Worker en cours d'exécution |
+| `complete`  | Analyse terminée — `result` est renseigné |
+| `failed`    | Erreur — `error` contient le message |
+
+**Sécurité :** le job n'est visible que par l'utilisateur qui l'a créé. Un autre `userId` reçoit `GraphQLError("Job not found")`.
+
+---
 
 ### `analysisHistory` — Consulter l'historique d'un pod
 
@@ -322,10 +362,11 @@ exit $RESULT
 
 ```
 Query
+├── analysisJob(jobId) → AnalysisJobType          ← polling async
 └── analysisHistory(podName, namespace, limit) → [AnalysisHistoryItem]
 
 Mutation
-├── analyzeIncident(podName, namespace) → AnalysisResultType
+├── analyzeIncident(podName, namespace) → AnalysisJobType  ← retourne immédiatement (async)
 ├── scanManifest(yamlContent, manifestType) → ManifestScanResultType
 ├── register(email, password) → AuthPayload
 └── login(email, password) → AuthPayload
@@ -350,9 +391,9 @@ Chaque appel gRPC ouvre un canal dédié (simple, sans pool — à optimiser ave
 
 ### Processus HTTP et timeout Gunicorn
 
-Le conteneur démarre Gunicorn avec **`--timeout 180`** (voir `Dockerfile`). Une mutation comme `analyzeIncident` attend la fin de l’inférence Ollama dans l’ai-service ; cette durée peut dépasser la valeur par défaut de Gunicorn (**30 s**), ce qui tuait le worker, provoquait une erreur côté Nginx et une réponse **HTML** au lieu de JSON pour le playground.
+Le conteneur démarre Gunicorn avec **`--timeout 180`** (voir `Dockerfile`). La mutation `analyzeIncident` est maintenant **asynchrone** — elle retourne immédiatement et ne bloque plus le worker. En revanche, `scanManifest` reste **synchrone** : elle attend la fin de l’inférence Ollama, ce qui peut dépasser la valeur par défaut de Gunicorn (**30 s**) et tuer le worker, provoquant une réponse **HTML 502** au lieu de JSON.
 
-Le timeout Gunicorn doit rester **au moins égal** à (ou supérieur à) le timeout HTTP Ollama côté ai-service (`AI_TIMEOUT_SECONDS` dans `.env`, souvent **120** s en dev sur CPU).
+Le timeout Gunicorn doit rester **au moins égal** à `AI_TIMEOUT_SECONDS` (souvent **120** s en dev sur CPU).
 
 ---
 
@@ -368,7 +409,7 @@ Le timeout Gunicorn doit rester **au moins égal** à (ou supérieur à) le time
 | `AI_GRPC_PORT`         | Non         | `50053`      | Port de l'AI Service                      |
 | `AUTH_GRPC_HOST`       | Non         | `auth-service`| Hôte de l'auth-service                   |
 | `AUTH_GRPC_PORT`       | Non         | `50051`      | Port de l'auth-service                    |
-| `REDIS_URL`            | Non         | —            | `redis://redis:6379/0` (futur — Dramatiq) |
+| `REDIS_URL`            | Oui (prod)  | —            | `redis://redis:6379/0` — broker Dramatiq pour les jobs async |
 | `CORS_ALLOWED_ORIGINS` | Non         | `*`          | Origins autorisées (CORS)                 |
 | `CORRELATION_WINDOW_MINUTES` | Non   | `15`         | Fenêtre (en minutes) pour marquer les pods « dans la fenêtre de corrélation » avec le pod incident |
 
@@ -457,15 +498,34 @@ mutation {
 }
 ```
 
-### 5. Tester une analyse
+### 5. Déclencher une analyse (async)
 
 ```graphql
 mutation {
   analyzeIncident(podName: "crashloop-pod", namespace: "default") {
-    errorType
-    rootCause
-    solution
-    confidence
+    jobId
+    status
+    createdAt
   }
 }
 ```
+
+### 6. Poller le résultat
+
+```graphql
+query {
+  analysisJob(jobId: "<jobId retourné ci-dessus>") {
+    status
+    result {
+      errorType
+      rootCause
+      solution
+      confidence
+      isRecurring
+    }
+    error
+  }
+}
+```
+
+Relancer cette query toutes les 2–5 secondes jusqu'à `status="complete"` ou `"failed"`.

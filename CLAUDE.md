@@ -207,7 +207,8 @@ Each service owns its tables in its own PostgreSQL instance. No cross-service DB
 - `namespace_snapshots` — namespace state at incident time for correlation
 
 ### postgres-gateway (gateway)
-- Django sessions and admin tables only
+- Django sessions and admin tables
+- `analysis_jobs` — async incident analysis jobs (UUID PK, user_id, pod_name, namespace, status pending/running/complete/failed, result JSON, error text)
 
 ## Environment Variables
 
