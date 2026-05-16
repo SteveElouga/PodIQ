@@ -2,9 +2,10 @@
 
 > **"Ton cluster a une mémoire. PodIQ la lit."**
 
-PodIQ est une plateforme SaaS DevOps qui ne se contente pas d'analyser une erreur Kubernetes — elle la comprend dans son contexte historique, prédit les problèmes avant qu'ils arrivent, corrèle les incidents entre services, et bloque les déploiements dangereux en CI/CD.
+PodIQ est une plateforme SaaS DevOps qui ne se contente pas d'analyser une erreur Kubernetes, elle la comprend dans son contexte historique, prédit les problèmes avant qu'ils arrivent, corrèle les incidents entre services, et bloque les déploiements dangereux en CI/CD.
 
 **Ce que les concurrents (K8sGPT, Komodor, Botkube) ne font pas :**
+
 - Mémoriser les patterns d'incidents pour détecter les récurrences
 - Analyser un manifest YAML **avant** `kubectl apply` pour prédire les crashs
 - Corréler un crash dans service A avec une dégradation dans service B
@@ -86,6 +87,14 @@ curl -s -X POST http://localhost:8080/graphql \
 
 Ouvrir **`http://localhost:8080/graphql`** dans le navigateur (header `Authorization: Bearer <token>`).
 
+### Pré-commit (qualité avant commit)
+
+À la racine du dépôt, avec un environnement virtuel : `pip install -r requirements-dev.txt`, puis **`pre-commit install`**. Les hooks exécutés avant chaque **`git commit`** incluent notamment la normalisation des fins de ligne, la validation YAML (dont `docker-compose.yml`), **Black**, **Ruff**, **detect-secrets** (référence `.secrets.baseline`), **yamllint**, **hadolint** sur les `Dockerfile` sous `services/*/`, et **mypy** sur les paquets Python Django des services via `scripts/run_mypy_precommit.py`. La configuration partagée est dans **`pyproject.toml`** ; le répertoire **`stubs/`** expose les imports `stubs.*` vers **`shared/grpc/`** pour les outils locaux.
+
+- **`pre-commit run`** sans option ne vérifie **que les fichiers déjà stagés** ; si l’index est vide, la plupart des hooks affichent « no files to check » — comportement attendu.
+- Pour une passe complète sur le dépôt : **`pre-commit run --all-files`**.
+- Si un hook **réécrit** des fichiers (souvent Black ou Ruff avec corrections), Git **refuse le commit** jusqu’à ce que vous **`git add`** à nouveau ces fichiers.
+
 ---
 
 ## 1. Vision produit & positionnement
@@ -94,15 +103,17 @@ PodIQ est une **plateforme d'intelligence des incidents Kubernetes**.
 
 ### Pourquoi PodIQ et pas K8sGPT ?
 
-| Capacité | K8sGPT | Komodor | PodIQ |
-|---|---|---|---|
-| Analyse d'erreur en temps réel | ✅ | ✅ | ✅ |
-| Mémoire des incidents passés | ❌ | Partiel | ✅ |
-| Détection de patterns récurrents | ❌ | ❌ | ✅ |
-| Analyse pre-deploy (manifest YAML) | ❌ | ❌ | ✅ |
-| Corrélation multi-services | ❌ | Partiel | ✅ |
-| Intégration CI/CD native (blocage pipeline) | ❌ | ❌ | ✅ |
-| IA locale (confidentialité logs) | Optionnel | ❌ | ✅ |
+
+| Capacité                                    | K8sGPT    | Komodor | PodIQ |
+| ------------------------------------------- | --------- | ------- | ----- |
+| Analyse d'erreur en temps réel              | ✅         | ✅       | ✅     |
+| Mémoire des incidents passés                | ❌         | Partiel | ✅     |
+| Détection de patterns récurrents            | ❌         | ❌       | ✅     |
+| Analyse pre-deploy (manifest YAML)          | ❌         | ❌       | ✅     |
+| Corrélation multi-services                  | ❌         | Partiel | ✅     |
+| Intégration CI/CD native (blocage pipeline) | ❌         | ❌       | ✅     |
+| IA locale (confidentialité logs)            | Optionnel | ❌       | ✅     |
+
 
 K8sGPT est un excellent outil CLI. PodIQ est une **plateforme intelligente** : elle apprend, anticipe et s'intègre dans le workflow DevOps existant.
 
@@ -111,16 +122,18 @@ K8sGPT est un excellent outil CLI. PodIQ est une **plateforme intelligente** : e
 ## 2. Cible utilisateur
 
 **Persona principal :**
+
 - DevOps Engineer / SRE
 - Backend Engineer travaillant avec Kubernetes
 - Niveau : intermédiaire à senior
 - Contexte : équipes de 3 à 50 ingénieurs
 
 **Douleurs actuelles résolues :**
+
 - Perte de temps à analyser des logs manuellement à chaque incident
 - Même erreur qui revient sans que personne ne l'ait documentée
 - Déploiement cassant la prod à cause d'une mauvaise config YAML
-- Crash dans un service causé par un autre — introuvable sans corrélation
+- Crash dans un service causé par un autre, ce qui introuvable sans corrélation
 - Dépendance à ChatGPT sans contexte cluster ni mémoire
 
 ---
@@ -144,14 +157,18 @@ PodIQ n'est pas un wrapper IA sur `kubectl`. C'est une plateforme qui :
 **Problème résolu :** Le même pod crashe pour la même raison 3 fois en 2 semaines. Personne ne s'en souvient.
 
 **Ce que PodIQ fait :**
+
 - Stocke chaque analyse avec son contexte complet
 - Détecte automatiquement quand un incident est récurrent
 - Affiche : *"Ce pod a crashé 3 fois ce mois pour la même raison."*
 - Enrichit chaque nouveau prompt avec les 5 derniers incidents similaires
 
 **Implémentation :**
-- Table `incident_patterns` — upsert sur `(pod_name, namespace, error_type)`
-- `memory/engine.py` dans `ai-service`
+
+- Table `incident_patterns` (Django ORM) : upsert sur `(pod_name, namespace, error_type)` via `_upsert_pattern()` dans `app/grpc_server.py`
+- `_get_recurrence_count()` : lecture du compteur d'occurrences à chaque analyse
+- `GetAnalysisHistory` (gRPC) : retourne les 5 derniers incidents similaires pour enrichir le prompt IA
+- `_save_analysis()` : persiste chaque analyse dans la table `analyses`
 
 ---
 
@@ -160,12 +177,14 @@ PodIQ n'est pas un wrapper IA sur `kubectl`. C'est une plateforme qui :
 **Problème résolu :** Un `deployment.yaml` mal configuré casse la prod. 30 minutes de rollback perdues.
 
 **Ce que PodIQ fait :**
+
 - Accepte un manifest YAML avant `kubectl apply`
 - Détecte : variables manquantes, limites mémoire trop basses, probes absentes, images sans tag fixe
 - Croise avec l'historique pour détecter des configs qui ont déjà causé des crashs
 - Retourne un rapport : `safe` / `warning` / `block`
 
 **Implémentation :**
+
 - `parsers/yaml_parser.py` dans `analyzer-service`
 - Prompt IA spécialisé `predeploy_prompt.py`
 - CLI : `podiq scan manifest deployment.yaml`
@@ -177,8 +196,9 @@ PodIQ n'est pas un wrapper IA sur `kubectl`. C'est une plateforme qui :
 **Problème résolu :** Service A crashe à cause de Service B en OOMKilled. Sans corrélation, on cherche dans les mauvais logs.
 
 **Ce que PodIQ fait :**
+
 - Collecte l'état de tous les pods du namespace à chaque analyse
-- Détecte les causalités temporelles (fenêtre configurable, défaut 15 min)
+- Détecte les causalités temporelles (fenêtre configurable, par défaut 15 min)
 - Affiche : *"postgres-service was OOMKilled 6 minutes before this crash."*
 
 **Comment ça marche en détail :**
@@ -199,6 +219,7 @@ Si aucun voisin n'est dans la fenêtre : `correlatedService: null`, `correlation
 **Variable d'environnement :** `CORRELATION_WINDOW_MINUTES` (défaut `15`).
 
 **Implémentation :**
+
 - `collectors/namespace_scan.py` dans `analyzer-service`
 - `app/namespace_correlation.py` dans `gateway` (`build_namespace_context`)
 - Table `namespace_snapshots` PostgreSQL (analyzer-service)
@@ -211,12 +232,14 @@ Si aucun voisin n'est dans la fenêtre : `correlatedService: null`, `correlation
 **Problème résolu :** Les analyses post-incident arrivent trop tard. Le déploiement est déjà en prod.
 
 **Ce que PodIQ fait :**
+
 - Endpoint REST dédié : `POST /api/v1/cicd/scan`
 - Auth via API Key (adapté aux pipelines)
 - Exit codes : 0 = safe, 1 = warning, 2 = block
 - Support GitHub Actions et GitLab CI
 
 **Implémentation :**
+
 - `gateway/api/cicd.py`
 - `apikeys/` dans `auth-service`
 - GitHub Action officielle `podiq/scan-action@v1` (Phase 2)
@@ -270,7 +293,8 @@ podiq scan manifest <path/to/deployment.yaml>
 ```
 
 **Principe fondamental :** chaque service est un microservice **entièrement indépendant**.
-- Sa propre base PostgreSQL — aucun accès à la base d'un autre service
+
+- Sa propre base PostgreSQL avec aucun accès à la base d'un autre service
 - Sa propre stack Django ORM + migrations
 - Toute communication inter-service passe exclusivement par **gRPC**
 - Les références croisées sont des UUIDs applicatifs, sans FK cross-service
@@ -315,8 +339,8 @@ podiq scan manifest <path/to/deployment.yaml>
 
 ┌────────────────┐
 │    Ollama      │
-│ qwen2.5-coder  │
-│     :14b       │
+│    mistral     │
+│   (mistral)    │
 └────────────────┘
 
 ┌────────────────┐
@@ -409,12 +433,22 @@ podiq/
 │   │   ├── analysis.py
 │   │   ├── predeploy.py
 │   │   └── pattern.py
+│   ├── podiq_logging/
+│   │   └── structlog_setup.py       # structlog JSON / console + champ service
 │   └── grpc/                          # stubs gRPC générés
 │
+├── stubs/                             # paquet local stubs.* → liens vers shared/grpc/
+├── scripts/
+│   ├── run_all_tests.sh               # pytest des quatre services
+│   └── run_mypy_precommit.py          # mypy multi-services (pre-commit)
+├── pyproject.toml                     # Black, Ruff, mypy
+├── .pre-commit-config.yaml
+├── .secrets.baseline                  # références detect-secrets (faux positifs connus)
+├── .yamllint.yml
+├── pytest.ini
+├── requirements-dev.txt               # outils dev + pre-commit + grpcio-tools
 ├── docker-compose.yml
-├── docker-compose.override.yml
 ├── .env.example
-├── Makefile
 └── README.md
 ```
 
@@ -430,14 +464,15 @@ podiq/
 
 **Rôle :** Point d'entrée unique — GraphQL pour l'UI/CLI, REST pour les pipelines CI/CD.
 
-**Base de données :** `postgres-gateway` — sessions Django uniquement
+**Base de données :** `postgres-gateway`: sessions Django uniquement
 
 **Responsabilités :**
+
 - Exposer l'API GraphQL (Strawberry) pour UI et CLI
 - Exposer `POST /api/v1/cicd/scan` en REST avec auth API Key
 - Valider JWT et API Keys via gRPC vers auth-service (jamais en local)
-- Orchestrer les appels via gRPC — zéro logique métier, zéro accès aux bases des autres services
-- Gérer la file Redis (Dramatiq) — ne jamais bloquer sur l'IA
+- Orchestrer les appels via gRPC: zéro logique métier, zéro accès aux bases des autres services
+- Gérer la file Redis (Dramatiq): ne jamais bloquer sur l'IA
 
 ---
 
@@ -447,9 +482,10 @@ podiq/
 
 **Rôle :** Interaction exclusive avec Kubernetes + parsing YAML.
 
-**Base de données :** `postgres-analyzer` — `logs_snapshots`, `namespace_snapshots`
+**Base de données :** `postgres-analyzer`: `logs_snapshots`, `namespace_snapshots`
 
 **Responsabilités :**
+
 - Logs pod (max 2000 lignes), events, describe output
 - Scanner l'état de tous les pods du namespace (différenciant #3)
 - Parser un manifest YAML (différenciant #2)
@@ -465,9 +501,10 @@ podiq/
 
 **Rôle :** Cerveau IA + Memory Engine + Corrélateur temporel.
 
-**Base de données :** `postgres-ai` — `analyses`, `incident_patterns`
+**Base de données :** `postgres-ai`: `analyses`, `incident_patterns`
 
 **Responsabilités :**
+
 - Analyse incident : prompt enrichi historique → Ollama
 - Pre-deploy scan : prompt spécialisé
 - Memory Engine : lire historique dans **sa propre base** + enrichir le prompt (5 derniers incidents)
@@ -483,9 +520,10 @@ podiq/
 
 **Rôle :** Auth utilisateurs + gestion API Keys CI/CD.
 
-**Base de données :** `postgres-auth` — `users`, `api_keys`
+**Base de données :** `postgres-auth`: `users`, `api_keys`
 
 **Responsabilités :**
+
 - Login / Register + JWT
 - Génération et validation des API Keys pour pipelines
 - Révocation d'API Keys
@@ -699,25 +737,27 @@ Application crashes at startup due to missing DATABASE_URL env variable
 
 ## 11. Stack technique détaillée
 
-| Domaine | Technologie | Justification |
-|---|---|---|
-| API Gateway | Django 5.2 + Strawberry GraphQL | Stack Python cohérente, GraphQL flexible |
-| API CI/CD | Django REST Framework (minimal) | REST plus adapté pour pipelines |
-| GraphQL | Strawberry | Plus moderne que Graphene, typage Python natif |
-| Microservices | Python 3.12 | Perf améliorée, async natif |
-| Communication interne | gRPC + protobuf | Rapide, typé, scalable |
-| Queue async | Dramatiq + Redis | Plus simple que Celery, moderne |
-| Base de données | PostgreSQL + JSONB | JSONB pour historique incidents |
-| Cache / Queue | Redis | Jobs async, rate limiting, cache API keys |
-| IA locale | Ollama 0.23.2 + qwen2.5-coder:14b | Gratuit, Dockerisable, confidentialité logs — configurable via `OLLAMA_MODEL` |
-| Logs centralisés | Grafana Loki | Cohérent avec produit orienté observabilité |
-| Agent logs | Promtail | Lit stdout Docker → Loki |
-| Visualisation | Grafana | Debug rapide + dashboard incidents |
-| Validation | Pydantic v2 | Parsing IA, schemas typés |
-| YAML parsing | PyYAML | Pre-deploy scanner |
-| Reverse proxy | Nginx | Frontend, GraphQL, REST |
-| Conteneurisation | Docker + Docker Compose | Dev local |
-| Frontend | Angular | Cohérent avec la stack |
+
+| Domaine               | Technologie                       | Justification                                                                 |
+| --------------------- | --------------------------------- | ----------------------------------------------------------------------------- |
+| API Gateway           | Django 5.2 + Strawberry GraphQL   | Stack Python cohérente, GraphQL flexible                                      |
+| API CI/CD             | Django REST Framework (minimal)   | REST plus adapté pour pipelines                                               |
+| GraphQL               | Strawberry                        | Plus moderne que Graphene, typage Python natif                                |
+| Microservices         | Python 3.12                       | Perf améliorée, async natif                                                   |
+| Communication interne | gRPC + protobuf                   | Rapide, typé, scalable                                                        |
+| Queue async           | Dramatiq + Redis                  | Plus simple que Celery, moderne                                               |
+| Base de données       | PostgreSQL + JSONB                | JSONB pour historique incidents                                               |
+| Cache / Queue         | Redis                             | Jobs async, rate limiting, cache API keys                                     |
+| IA locale             | Ollama + mistral                  | Gratuit, Dockerisable, confidentialité logs — configurable via `OLLAMA_MODEL` |
+| Logs centralisés      | Grafana Loki                      | Cohérent avec produit orienté observabilité                                   |
+| Agent logs            | Promtail                          | Lit stdout Docker → Loki ; services PodIQ émettent des lignes **JSON** (`structlog`, fichier commun `shared/podiq_logging/structlog_setup.py`) avec `timestamp`, `level`, `service`, `event` pour filtres Grafana/Loki |
+| Visualisation         | Grafana                           | Debug rapide + dashboard incidents                                            |
+| Validation            | Pydantic v2                       | Parsing IA, schemas typés                                                     |
+| YAML parsing          | PyYAML                            | Pre-deploy scanner                                                            |
+| Reverse proxy         | Nginx                             | Frontend, GraphQL, REST                                                       |
+| Conteneurisation      | Docker + Docker Compose           | Dev local                                                                     |
+| Frontend              | Angular                           | Cohérent avec la stack                                                        |
+
 
 ---
 
@@ -797,17 +837,20 @@ pytest-django==4.11.1
 ### Dev (racine) — `requirements-dev.txt`
 
 ```txt
-grpcio-tools==1.73.0
+grpcio-tools==1.80.0
 black==25.1.0
 isort==6.0.1
 ruff==0.11.9
 mypy==1.15.0
+pre-commit==4.2.0
+detect-secrets==1.5.0
 pytest==8.3.5
 pytest-django==4.11.1
 pytest-asyncio==0.26.0
 coverage==7.8.0
-pre-commit==4.2.0
 ```
+
+Les versions exactes peuvent évoluer ; se référer au fichier **`requirements-dev.txt`** à la racine. Les hooks **pre-commit** installent leurs propres environnements pour Black, Ruff, detect-secrets, yamllint, hadolint et mypy (avec dépendances Python agrégées pour les quatre services Django).
 
 ---
 
@@ -815,22 +858,24 @@ pre-commit==4.2.0
 
 ### Conteneurs Docker Compose
 
-| Conteneur | Rôle |
-|---|---|
-| `gateway` | API GraphQL + REST CI/CD |
-| `auth-service` | JWT + API Keys |
-| `analyzer-service` | Collecte K8s + YAML parser + Namespace scan |
-| `ai-service` | IA + Memory Engine + Corrélateur |
-| `postgres-gateway` | Base dédiée gateway (sessions Django) |
-| `postgres-auth` | Base dédiée auth-service (users, api_keys) |
+
+| Conteneur           | Rôle                                           |
+| ------------------- | ---------------------------------------------- |
+| `gateway`           | API GraphQL + REST CI/CD                       |
+| `auth-service`      | JWT + API Keys                                 |
+| `analyzer-service`  | Collecte K8s + YAML parser + Namespace scan    |
+| `ai-service`        | IA + Memory Engine + Corrélateur               |
+| `postgres-gateway`  | Base dédiée gateway (sessions Django)          |
+| `postgres-auth`     | Base dédiée auth-service (users, api_keys)     |
 | `postgres-analyzer` | Base dédiée analyzer-service (logs, snapshots) |
-| `postgres-ai` | Base dédiée ai-service (analyses, patterns) |
-| `redis` | Queue async Dramatiq + cache |
-| `ollama` | Modèle IA local Mistral 7B |
-| `grafana` | Visualisation logs + dashboard incidents |
-| `loki` | Agrégation logs centralisés |
-| `promtail` | Agent collecte logs Docker |
-| `nginx` | Reverse proxy |
+| `postgres-ai`       | Base dédiée ai-service (analyses, patterns)    |
+| `redis`             | Queue async Dramatiq + cache                   |
+| `ollama`            | Modèle IA local Mistral 7B                     |
+| `grafana`           | Visualisation logs + dashboard incidents       |
+| `loki`              | Agrégation logs centralisés                    |
+| `promtail`          | Agent collecte logs Docker                     |
+| `nginx`             | Reverse proxy                                  |
+
 
 ### Réseaux et volumes
 
@@ -852,6 +897,7 @@ volumes:
 ### Dashboard Grafana PodIQ
 
 Dashboard `podiq-overview.json` configuré pour visualiser :
+
 - Nombre d'analyses par heure / jour
 - Distribution des `error_type` détectés
 - Top 10 pods les plus incidents (score récurrence)
@@ -860,18 +906,20 @@ Dashboard `podiq-overview.json` configuré pour visualiser :
 
 ### Nginx — Résolution DNS dynamique
 
-Nginx utilise `resolver 127.0.0.11` (DNS interne Docker) avec une variable `$gateway_upstream` pour re-résoudre le hostname `gateway` à chaque requête. Cela garantit que Nginx continue de fonctionner après un redémarrage du container gateway (qui peut changer d'IP dans le réseau Docker). Ne pas utiliser de bloc `upstream` statique — il résout l'IP une seule fois au démarrage et la garde en cache.
+Nginx utilise `resolver 127.0.0.11` (DNS interne Docker) avec une variable `$gateway_upstream` pour re-résoudre le hostname `gateway` à chaque requête. Cela garantit que Nginx continue de fonctionner après un redémarrage du container gateway (qui peut changer d'IP dans le réseau Docker). Ne pas utiliser de bloc `upstream` statique car il résout l'IP une seule fois au démarrage et la garde en cache.
 
 ### Ressources machine recommandées
 
-| Composant | RAM estimée |
-|---|---|
-| Ollama (Mistral 7B) | ~8 GB |
-| PostgreSQL | ~512 MB |
-| Grafana + Loki | ~1 GB |
-| Services Python x4 | ~1 GB total |
-| **Minimum** | **16 GB RAM** |
-| **Recommandé** | **32 GB RAM** |
+
+| Composant           | RAM estimée   |
+| ------------------- | ------------- |
+| Ollama (Mistral 7B) | ~8 GB         |
+| PostgreSQL          | ~512 MB       |
+| Grafana + Loki      | ~1 GB         |
+| Services Python x4  | ~1 GB total   |
+| **Minimum**         | **16 GB RAM** |
+| **Recommandé**      | **32 GB RAM** |
+
 
 ---
 
@@ -959,11 +1007,12 @@ SLACK_WEBHOOK_URL=
 
 ## 15. Schéma de base de données
 
-Chaque service possède ses tables dans sa propre instance PostgreSQL. Aucun FK cross-service — les références croisées sont des UUIDs applicatifs transmis via gRPC.
+Chaque service possède ses tables dans sa propre instance PostgreSQL. Aucun FK cross-service, les références croisées sont des UUIDs applicatifs transmis via gRPC.
 
 ### postgres-auth — auth-service
 
 #### users
+
 ```sql
 CREATE TABLE users (
   id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -974,6 +1023,7 @@ CREATE TABLE users (
 ```
 
 #### api_keys
+
 ```sql
 CREATE TABLE api_keys (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -991,6 +1041,7 @@ CREATE TABLE api_keys (
 ### postgres-ai — ai-service
 
 #### analyses
+
 ```sql
 CREATE TABLE analyses (
   id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1015,6 +1066,7 @@ CREATE TABLE analyses (
 ```
 
 #### incident_patterns — Memory Engine
+
 ```sql
 -- Upsert à chaque analyse. Clé du Memory Engine.
 CREATE TABLE incident_patterns (
@@ -1035,6 +1087,7 @@ CREATE TABLE incident_patterns (
 ### postgres-analyzer — analyzer-service
 
 #### logs_snapshots
+
 ```sql
 CREATE TABLE logs_snapshots (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1047,6 +1100,7 @@ CREATE TABLE logs_snapshots (
 ```
 
 #### namespace_snapshots — Corrélation
+
 ```sql
 -- État du namespace au moment d'un incident.
 CREATE TABLE namespace_snapshots (
@@ -1195,6 +1249,7 @@ Return ONLY this JSON:
 ## 18. Sécurité
 
 **MVP obligatoire :**
+
 - Masquer les secrets dans les logs avant envoi à Ollama (regex sur `password`, `secret`, `token`, `key`)
 - RBAC K8s minimal : `get`, `list` sur pods/logs uniquement
 - Validation JWT sur chaque requête GraphQL
@@ -1204,6 +1259,7 @@ Return ONLY this JSON:
 - Variables sensibles uniquement via `.env` / Docker secrets
 
 **Ne jamais faire :**
+
 - Stocker des logs en clair indéfiniment
 - Exposer le kubeconfig publiquement
 - Hardcoder des credentials dans le code
@@ -1215,71 +1271,76 @@ Return ONLY this JSON:
 
 ### Semaine 1 — Fondation ✅
 
-- [x] Monorepo + Docker Compose complet (4 postgres + tous conteneurs up)
-- [x] Django ORM + migrations dans chaque service (chaque service possède ses tables)
+- Monorepo + Docker Compose complet (4 postgres + tous conteneurs up)
+- Django ORM + migrations dans chaque service (chaque service possède ses tables)
   - auth-service : `users`, `api_keys`
   - ai-service : `analyses`, `incident_patterns`
   - analyzer-service : `logs_snapshots`, `namespace_snapshots`
   - gateway : sessions Django uniquement
-- [x] Redis + Ollama (pull Mistral 7B)
-- [x] proto gRPC → génération stubs Python dans `shared/grpc/`
-- [x] Analyzer Service : `CollectPod` + `ScanNamespace` + `ParseManifest`
-- [x] AI Service : `AnalyzeIncident` + `ScanManifest` + `GetAnalysisHistory`
-- [x] Auth Service : `Register` + `Login` + `ValidateJWT` + `CreateApiKey` + `ValidateApiKey` + `RevokeApiKey`
-- [x] Gateway GraphQL complet : `analyzeIncident`, `scanManifest`, `register`, `login`, `analysisHistory`
-- [x] Loki + Promtail + Grafana configurés (labels `service`, `namespace`, rétention 7j)
-- [x] README.md dans chaque microservice (FR, analogies, gRPC I/O, DB, env vars)
+- Redis + Ollama (pull Mistral 7B)
+- proto gRPC → génération stubs Python dans `shared/grpc/`
+- Analyzer Service : `CollectPod` + `ScanNamespace` + `ParseManifest`
+- AI Service : `AnalyzeIncident` + `ScanManifest` + `GetAnalysisHistory`
+- Auth Service : `Register` + `Login` + `ValidateJWT` + `CreateApiKey` + `ValidateApiKey` + `RevokeApiKey`
+- Gateway GraphQL complet : `analyzeIncident`, `scanManifest`, `register`, `login`, `analysisHistory`
+- Loki + Promtail + Grafana configurés (labels `service`, `namespace`, rétention 7j)
+- README.md dans chaque microservice (FR, analogies, gRPC I/O, DB, env vars)
 
 ### Semaine 2 — IA & Différenciants
 
-- [x] **Memory Engine** : gateway appelle `GetAnalysisHistory` avant chaque `AnalyzeIncident`, injecte `history[]`
-- [ ] **Corrélation temporelle** complète (fenêtre 15 min, `namespace_context` enrichi)
-- [ ] **Prompt pre-deploy** flux complet gateway ↔ analyzer ↔ ai
-- [ ] Queue Dramatiq + Redis (flux async complet)
-- [ ] **Endpoint REST CI/CD** `POST /api/v1/cicd/scan` + Auth API Key
+- **Memory Engine** : gateway appelle `GetAnalysisHistory` avant chaque `AnalyzeIncident`, injecte `history[]`
+- **Corrélation temporelle** complète (fenêtre 15 min, `namespace_context` enrichi)
+- **Prompt pre-deploy** flux complet gateway ↔ analyzer ↔ ai
+- Queue Dramatiq + Redis (flux async complet)
+- **Endpoint REST CI/CD** `POST /api/v1/cicd/scan` + Auth API Key
 
 ### Semaine 3 — UI, CLI & Finalisation
 
-- [ ] Angular : analyse incident + historique du pod
-- [ ] Angular : upload YAML + rapport pre-deploy
-- [ ] CLI : `podiq analyze pod` + `podiq scan manifest`
-- [ ] Dashboard Grafana `podiq-overview.json`
-- [ ] Tests unitaires services core (coverage > 70%)
-- [ ] Déploiement staging
+- Angular : analyse incident + historique du pod
+- Angular : upload YAML + rapport pre-deploy
+- CLI : `podiq analyze pod` + `podiq scan manifest`
+- Dashboard Grafana `podiq-overview.json`
+- Tests unitaires services core (coverage > 70%)
+- Déploiement staging
 
 ---
 
 ## 20. Évolution post-MVP
 
-| Feature | Différenciant | Priorité |
-|---|---|---|
-| GitHub Action officielle `podiq/scan-action@v1` | #4 CI/CD | Haute |
-| GitLab CI template natif | #4 CI/CD | Haute |
-| Alertes récurrence Slack/Teams | #1 Mémoire | Haute |
-| Corrélation avancée (graph de dépendances) | #3 Corrélation | Haute |
-| RAG sur historique incidents (embeddings) | #1 Mémoire | Moyenne |
-| Analyse YAML élargie (RBAC, NetworkPolicy, HPA) | #2 Pre-deploy | Moyenne |
-| Multi-cluster support | — | Moyenne |
-| Dashboard santé cluster (scoring global) | — | Basse |
-| Migration Docker Compose → Kubernetes | — | Phase 3 |
-| SSO / OAuth2 | — | Phase 3 |
+
+| Feature                                         | Différenciant  | Priorité |
+| ----------------------------------------------- | -------------- | -------- |
+| GitHub Action officielle `podiq/scan-action@v1` | #4 CI/CD       | Haute    |
+| GitLab CI template natif                        | #4 CI/CD       | Haute    |
+| Alertes récurrence Slack/Teams                  | #1 Mémoire     | Haute    |
+| Corrélation avancée (graph de dépendances)      | #3 Corrélation | Haute    |
+| RAG sur historique incidents (embeddings)       | #1 Mémoire     | Moyenne  |
+| Analyse YAML élargie (RBAC, NetworkPolicy, HPA) | #2 Pre-deploy  | Moyenne  |
+| Multi-cluster support                           | —              | Moyenne  |
+| Dashboard santé cluster (scoring global)        | —              | Basse    |
+| Migration Docker Compose → Kubernetes           | —              | Phase 3  |
+| SSO / OAuth2                                    | —              | Phase 3  |
+
 
 ---
 
 ## 21. Modèle économique
 
 **Gratuit :**
+
 - 10 analyses incident / jour
 - Pre-deploy scan illimité (levier d'acquisition principal)
 - Historique 7 jours — 1 cluster
 
 **Pro (payant) :**
+
 - Analyses illimitées + Memory Engine complet
 - Corrélation multi-services
 - Intégration CI/CD native (GitHub Actions, GitLab CI)
 - Multi-cluster + notifications Slack/Teams
 
 **Enterprise :**
+
 - Self-hosted (confidentialité totale des logs — argument fort)
 - RBAC avancé par namespace + SSO + SLA
 
@@ -1295,6 +1356,7 @@ Return ONLY this JSON:
 - Pydantic v2 pour **tous** les modèles de données inter-services et réponses IA
 - `structlog` pour les logs — jamais `print` ni `logging` standard
 - Ruff pour le linting, Black pour le formatage
+- Hooks **pre-commit** décrits en **§ 0** (`pre-commit install`) ; sans installation des hooks, les mêmes contrôles restent disponibles avec `pre-commit run` / `pre-commit run --all-files`
 - Tests Pytest, coverage > 70%
 
 ### Points d'attention critiques
@@ -1306,8 +1368,8 @@ Return ONLY this JSON:
 5. **Masquer les secrets dans analyzer-service** — avant toute transmission à ai-service
 6. **Memory Engine dans ai-service** — lit PostgreSQL directement pour enrichir le prompt
 7. **Endpoint CI/CD est REST** — exit codes 0 / 1 / 2, pas GraphQL
-8. **`incident_patterns` : upsert à chaque analyse** — clé unique `(pod_name, namespace, error_type)`
-9. **`namespace_snapshots` collecté à chaque analyse incident** — même si la corrélation est partielle
+8. `**incident_patterns` : upsert à chaque analyse** — clé unique `(pod_name, namespace, error_type)`
+9. `**namespace_snapshots` collecté à chaque analyse incident** — même si la corrélation est partielle
 
 ### Ordre de développement recommandé
 

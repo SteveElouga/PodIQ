@@ -324,12 +324,21 @@ Gateway ──gRPC──▶ AI Service ──HTTP──▶ Ollama (Mistral 7B)
                       └──▶ postgres-ai
 ```
 
-Ce service est **appelé par** le Gateway.  
+Ce service est **appelé par** le Gateway.
 Ce service **appelle** Ollama (via HTTP) et sa propre base de données.
 
 ---
 
 ## Comment tester
+
+### Tests unitaires (pytest)
+
+```bash
+cd services/ai-service
+python3 -m pytest -v
+```
+
+Les hooks **pre-commit** du dépôt incluent **mypy** sur ce service lorsque des fichiers Python sous `services/ai-service/` sont stagés ; voir le README racine § « Pré-commit ».
 
 ### 1. Démarrer les dépendances
 

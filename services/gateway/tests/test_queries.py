@@ -3,6 +3,7 @@ analysisHistory query tests.
 The ai_client gRPC client is fully mocked.
 require_auth is mocked to simulate an authenticated user.
 """
+
 import time
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,6 +12,7 @@ MOCK_USER_ID = "user-uuid-test"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def make_history_item(
     id="item-uuid-1",
@@ -44,13 +46,26 @@ def make_history_response(items=None):
 
 # ── analysisHistory ───────────────────────────────────────────────────────────
 
+
 class TestAnalysisHistoryQuery:
     def _run(self, items=None, pod_name="my-pod", namespace="default", limit=10):
         response = make_history_response(items=items or [])
-        with patch("app.graphql.queries.history.require_auth", return_value=MOCK_USER_ID), \
-             patch("app.graphql.queries.history.ai_client.get_history", return_value=response):
-            from app.graphql.queries.history import _analysis_history as analysis_history
-            return analysis_history(info=None, pod_name=pod_name, namespace=namespace, limit=limit)
+        with (
+            patch(
+                "app.graphql.queries.history.require_auth", return_value=MOCK_USER_ID
+            ),
+            patch(
+                "app.graphql.queries.history.ai_client.get_history",
+                return_value=response,
+            ),
+        ):
+            from app.graphql.queries.history import (
+                _analysis_history as analysis_history,
+            )
+
+            return analysis_history(
+                info=None, pod_name=pod_name, namespace=namespace, limit=limit
+            )
 
     def test_returns_empty_list_when_no_history(self):
         result = self._run(items=[])
@@ -94,19 +109,41 @@ class TestAnalysisHistoryQuery:
         assert "T" in created_at or "-" in created_at
 
     def test_get_history_called_with_correct_args(self):
-        with patch("app.graphql.queries.history.require_auth", return_value=MOCK_USER_ID), \
-             patch("app.graphql.queries.history.ai_client.get_history",
-                   return_value=make_history_response()) as mock_fn:
-            from app.graphql.queries.history import _analysis_history as analysis_history
-            analysis_history(info=None, pod_name="target-pod", namespace="staging", limit=5)
+        with (
+            patch(
+                "app.graphql.queries.history.require_auth", return_value=MOCK_USER_ID
+            ),
+            patch(
+                "app.graphql.queries.history.ai_client.get_history",
+                return_value=make_history_response(),
+            ) as mock_fn,
+        ):
+            from app.graphql.queries.history import (
+                _analysis_history as analysis_history,
+            )
 
-        mock_fn.assert_called_once_with(pod_name="target-pod", namespace="staging", limit=5)
+            analysis_history(
+                info=None, pod_name="target-pod", namespace="staging", limit=5
+            )
+
+        mock_fn.assert_called_once_with(
+            pod_name="target-pod", namespace="staging", limit=5
+        )
 
     def test_default_limit_is_ten(self):
-        with patch("app.graphql.queries.history.require_auth", return_value=MOCK_USER_ID), \
-             patch("app.graphql.queries.history.ai_client.get_history",
-                   return_value=make_history_response()) as mock_fn:
-            from app.graphql.queries.history import _analysis_history as analysis_history
+        with (
+            patch(
+                "app.graphql.queries.history.require_auth", return_value=MOCK_USER_ID
+            ),
+            patch(
+                "app.graphql.queries.history.ai_client.get_history",
+                return_value=make_history_response(),
+            ) as mock_fn,
+        ):
+            from app.graphql.queries.history import (
+                _analysis_history as analysis_history,
+            )
+
             analysis_history(info=None, pod_name="pod", namespace="ns")
 
         call_kwargs = mock_fn.call_args[1]
@@ -127,6 +164,8 @@ class TestAnalysisHistoryQuery:
 class TestAnalysisHistoryAuth:
     def test_raises_permission_error_without_token(self):
         import pytest
+
         from app.graphql.queries.history import _analysis_history as analysis_history
+
         with pytest.raises(PermissionError):
             analysis_history(info=None, pod_name="pod", namespace="ns")

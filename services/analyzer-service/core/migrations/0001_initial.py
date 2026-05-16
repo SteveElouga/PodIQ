@@ -11,7 +11,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="LogsSnapshot",
             fields=[
-                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
                 ("analysis_id", models.UUIDField()),
                 ("raw_logs", models.TextField(blank=True)),
                 ("events", models.TextField(blank=True)),
@@ -23,7 +31,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="NamespaceSnapshot",
             fields=[
-                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                (
+                    "id",
+                    models.UUIDField(
+                        default=uuid.uuid4,
+                        editable=False,
+                        primary_key=True,
+                        serialize=False,
+                    ),
+                ),
                 ("analysis_id", models.UUIDField()),
                 ("namespace", models.CharField(max_length=255)),
                 ("pods_state", models.JSONField()),
@@ -41,6 +57,8 @@ class Migration(migrations.Migration):
         ),
         migrations.AddIndex(
             model_name="namespacesnapshot",
-            index=models.Index(fields=["namespace", "collected_at"], name="ns_namespace_time_idx"),
+            index=models.Index(
+                fields=["namespace", "collected_at"], name="ns_namespace_time_idx"
+            ),
         ),
     ]

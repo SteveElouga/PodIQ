@@ -2,9 +2,25 @@ import hashlib
 import hmac
 import os
 import secrets
+import sys
 import uuid
 from concurrent import futures
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+_docker_setup = Path("/app/structlog_setup.py")
+if _docker_setup.is_file():
+    _root_app = str(_docker_setup.parent)
+    if _root_app not in sys.path:
+        sys.path.insert(0, _root_app)
+else:
+    for _ancestor in Path(__file__).resolve().parents:
+        _candidate = _ancestor / "shared" / "podiq_logging" / "structlog_setup.py"
+        if _candidate.is_file():
+            _pkg = str(_candidate.parent)
+            if _pkg not in sys.path:
+                sys.path.insert(0, _pkg)
+            break
 
 import django
 
@@ -16,8 +32,8 @@ import jwt
 import structlog
 from django.utils import timezone as tz
 
+from core.models import ApiKey, User
 from stubs.auth import auth_pb2, auth_pb2_grpc
-from core.models import User, ApiKey
 
 logger = structlog.get_logger()
 
@@ -26,6 +42,7 @@ JWT_EXPIRY_MINUTES = int(os.environ.get("JWT_EXPIRY_MINUTES", "1440"))
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _hash_password(password: str) -> str:
     pepper = os.environ.get("DJANGO_SECRET_KEY", "")
@@ -40,8 +57,8 @@ def _generate_token(user_id: str, email: str) -> str:
     payload = {
         "user_id": user_id,
         "email": email,
-        "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRY_MINUTES),
+        "iat": datetime.now(UTC),
+        "exp": datetime.now(UTC) + timedelta(minutes=JWT_EXPIRY_MINUTES),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
 
@@ -51,6 +68,7 @@ def _hash_api_key(raw_key: str) -> str:
 
 
 # ── Servicer ──────────────────────────────────────────────────────────────────
+
 
 class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
 
@@ -77,7 +95,9 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
         )
         token = _generate_token(str(user.id), user.email)
         logger.info("auth_register_ok", user_id=str(user.id))
-        return auth_pb2.AuthResponse(user_id=str(user.id), token=token, email=user.email)
+        return auth_pb2.AuthResponse(
+            user_id=str(user.id), token=token, email=user.email
+        )
 
     def Login(
         self,
@@ -100,7 +120,9 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
 
         token = _generate_token(str(user.id), user.email)
         logger.info("auth_login_ok", user_id=str(user.id))
-        return auth_pb2.AuthResponse(user_id=str(user.id), token=token, email=user.email)
+        return auth_pb2.AuthResponse(
+            user_id=str(user.id), token=token, email=user.email
+        )
 
     def ValidateJWT(
         self,
@@ -192,6 +214,7 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
 
 
 # ── Entrypoint ────────────────────────────────────────────────────────────────
+
 
 def serve() -> None:
     port = os.environ.get("GRPC_PORT", "50051")

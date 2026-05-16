@@ -37,7 +37,11 @@ def chat(prompt: str, system: str) -> str:
         logger.error("ollama_timeout", timeout=AI_TIMEOUT)
         raise
     except httpx.HTTPStatusError as exc:
-        logger.error("ollama_http_error", status=exc.response.status_code, body=exc.response.text[:200])
+        logger.error(
+            "ollama_http_error",
+            status=exc.response.status_code,
+            body=exc.response.text[:200],
+        )
         raise
     except KeyError as exc:
         logger.error("ollama_unexpected_response", error=str(exc))

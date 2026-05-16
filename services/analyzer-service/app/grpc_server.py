@@ -1,6 +1,21 @@
 import os
 import sys
 from concurrent import futures
+from pathlib import Path
+
+_docker_setup = Path("/app/structlog_setup.py")
+if _docker_setup.is_file():
+    _root_app = str(_docker_setup.parent)
+    if _root_app not in sys.path:
+        sys.path.insert(0, _root_app)
+else:
+    for _ancestor in Path(__file__).resolve().parents:
+        _candidate = _ancestor / "shared" / "podiq_logging" / "structlog_setup.py"
+        if _candidate.is_file():
+            _pkg = str(_candidate.parent)
+            if _pkg not in sys.path:
+                sys.path.insert(0, _pkg)
+            break
 
 import django
 
@@ -10,10 +25,10 @@ django.setup()
 import grpc
 import structlog
 
-from stubs.analyzer import analyzer_pb2, analyzer_pb2_grpc
-from app.collectors.pod_collector import collect_pod
 from app.collectors.namespace_collector import scan_namespace
+from app.collectors.pod_collector import collect_pod
 from app.parsers.yaml_parser import parse_manifest
+from stubs.analyzer import analyzer_pb2, analyzer_pb2_grpc
 
 logger = structlog.get_logger()
 
@@ -52,14 +67,20 @@ class AnalyzerServicer(analyzer_pb2_grpc.AnalyzerServiceServicer):
         request: analyzer_pb2.NamespaceRequest,
         context: grpc.ServicerContext,
     ) -> analyzer_pb2.NamespaceSnapshot:
-        logger.info("scan_namespace", namespace=request.namespace, incident_timestamp=request.timestamp)
+        logger.info(
+            "scan_namespace",
+            namespace=request.namespace,
+            incident_timestamp=request.timestamp,
+        )
         try:
             result = scan_namespace(
                 namespace=request.namespace,
                 incident_timestamp=int(request.timestamp),
             )
         except Exception as exc:
-            logger.error("scan_namespace_error", namespace=request.namespace, error=str(exc))
+            logger.error(
+                "scan_namespace_error", namespace=request.namespace, error=str(exc)
+            )
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(exc))
             return analyzer_pb2.NamespaceSnapshot()

@@ -3,7 +3,9 @@ from urllib.parse import urlparse
 
 SECRET_KEY = os.environ["DJANGO_SECRET_KEY"]
 DEBUG = os.environ.get("DJANGO_DEBUG", "0") == "1"
-ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,gateway").split(",")
+ALLOWED_HOSTS = os.environ.get(
+    "DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,gateway"
+).split(",")
 
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
@@ -46,3 +48,7 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True
+
+import structlog_setup
+
+structlog_setup.configure_podiq_logging()

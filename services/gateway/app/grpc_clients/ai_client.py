@@ -5,9 +5,7 @@ from stubs.ai import ai_pb2, ai_pb2_grpc
 
 
 def _channel() -> grpc.Channel:
-    return grpc.insecure_channel(
-        f"{settings.AI_GRPC_HOST}:{settings.AI_GRPC_PORT}"
-    )
+    return grpc.insecure_channel(f"{settings.AI_GRPC_HOST}:{settings.AI_GRPC_PORT}")
 
 
 def analyze_incident(
@@ -32,7 +30,9 @@ def scan_manifest(
         )
 
 
-def get_history(pod_name: str, namespace: str, limit: int = 10) -> ai_pb2.HistoryResponse:
+def get_history(
+    pod_name: str, namespace: str, limit: int = 10
+) -> ai_pb2.HistoryResponse:
     with _channel() as channel:
         stub = ai_pb2_grpc.AIServiceStub(channel)
         return stub.GetAnalysisHistory(

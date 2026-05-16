@@ -1,5 +1,3 @@
-from typing import Optional
-
 import strawberry
 
 
@@ -12,8 +10,8 @@ class AnalysisResultType:
     confidence: str
     is_recurring: bool
     recurrence_count: int
-    correlated_service: Optional[str]
-    correlation_explanation: Optional[str]
+    correlated_service: str | None
+    correlation_explanation: str | None
 
 
 @strawberry.type

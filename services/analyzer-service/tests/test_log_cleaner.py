@@ -2,7 +2,8 @@
 Unit tests for app/parsers/log_cleaner.py.
 Pure functions — no external dependencies.
 """
-from app.parsers.log_cleaner import truncate, mask_secrets, clean, MAX_LOG_LINES
+
+from app.parsers.log_cleaner import MAX_LOG_LINES, clean, mask_secrets, truncate
 
 
 class TestTruncate:

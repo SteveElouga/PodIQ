@@ -8,7 +8,13 @@ from kubernetes.client.exceptions import ApiException
 
 logger = structlog.get_logger()
 
-_ERROR_REASONS = {"CrashLoopBackOff", "OOMKilled", "Error", "ImagePullBackOff", "ErrImagePull"}
+_ERROR_REASONS = {
+    "CrashLoopBackOff",
+    "OOMKilled",
+    "Error",
+    "ImagePullBackOff",
+    "ErrImagePull",
+}
 STUB_MODE = os.environ.get("STUB_MODE", "false").lower() == "true"
 
 
@@ -26,14 +32,24 @@ def _stub_scan_namespace(namespace: str, incident_timestamp: int) -> dict[str, A
     return {
         "namespace": namespace,
         "pods": [
-            {"pod_name": "api-gateway-7d9f", "status": "Running", "has_errors": False, "last_restart_time": 0},
+            {
+                "pod_name": "api-gateway-7d9f",
+                "status": "Running",
+                "has_errors": False,
+                "last_restart_time": 0,
+            },
             {
                 "pod_name": "worker-6b8c",
                 "status": "CrashLoopBackOff",
                 "has_errors": True,
                 "last_restart_time": ref_ts - 300,
             },
-            {"pod_name": "redis-0", "status": "Running", "has_errors": False, "last_restart_time": 0},
+            {
+                "pod_name": "redis-0",
+                "status": "Running",
+                "has_errors": False,
+                "last_restart_time": 0,
+            },
         ],
         "collected_at": ref_ts,
     }
@@ -51,7 +67,12 @@ def scan_namespace(namespace: str, incident_timestamp: int = 0) -> dict[str, Any
         for pod in pod_list.items:
             pods.append(_summarize_pod(pod))
     except ApiException as e:
-        logger.warning("namespace_scan_failed", namespace=namespace, status=e.status, reason=e.reason)
+        logger.warning(
+            "namespace_scan_failed",
+            namespace=namespace,
+            status=e.status,
+            reason=e.reason,
+        )
 
     collected_at = int(time.time())
     logger.info(

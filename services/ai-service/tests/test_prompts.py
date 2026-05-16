@@ -2,12 +2,12 @@
 Unit tests for the incident and predeploy prompt builders.
 Protobuf objects are imported from shared/grpc via conftest.py.
 """
-from stubs.ai import ai_pb2
 
 from app.prompts import incident_prompt, predeploy_prompt
-
+from stubs.ai import ai_pb2
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def make_incident_request(
     pod_name="my-pod",
@@ -73,6 +73,7 @@ def make_manifest_request(
 
 # ── incident_prompt ───────────────────────────────────────────────────────────
 
+
 class TestIncidentPromptBuild:
     def test_contains_pod_name(self):
         prompt = incident_prompt.build(make_incident_request(pod_name="crashloop-pod"))
@@ -87,11 +88,15 @@ class TestIncidentPromptBuild:
         assert "OOMKilled" in prompt
 
     def test_contains_logs(self):
-        prompt = incident_prompt.build(make_incident_request(logs="FATAL: out of memory"))
+        prompt = incident_prompt.build(
+            make_incident_request(logs="FATAL: out of memory")
+        )
         assert "FATAL: out of memory" in prompt
 
     def test_contains_events(self):
-        prompt = incident_prompt.build(make_incident_request(events="Killing container"))
+        prompt = incident_prompt.build(
+            make_incident_request(events="Killing container")
+        )
         assert "Killing container" in prompt
 
     def test_no_history_shows_placeholder(self):
@@ -99,7 +104,9 @@ class TestIncidentPromptBuild:
         assert "No previous incidents" in prompt
 
     def test_history_is_formatted(self):
-        inc = make_past_incident(error_type="OOMKilled", root_cause="Leak", solution="Increase limit")
+        inc = make_past_incident(
+            error_type="OOMKilled", root_cause="Leak", solution="Increase limit"
+        )
         prompt = incident_prompt.build(make_incident_request(history=[inc]))
         assert "OOMKilled" in prompt
         assert "Leak" in prompt
@@ -150,7 +157,13 @@ class TestIncidentPromptBuild:
 
     def test_prompt_contains_json_schema_keys(self):
         prompt = incident_prompt.build(make_incident_request())
-        for key in ("error_type", "root_cause", "explanation", "solution", "confidence"):
+        for key in (
+            "error_type",
+            "root_cause",
+            "explanation",
+            "solution",
+            "confidence",
+        ):
             assert key in prompt
 
     def test_system_constant_is_non_empty_string(self):
@@ -160,9 +173,12 @@ class TestIncidentPromptBuild:
 
 # ── predeploy_prompt ──────────────────────────────────────────────────────────
 
+
 class TestPredeployPromptBuild:
     def test_contains_parsed_manifest(self):
-        prompt = predeploy_prompt.build(make_manifest_request(parsed_manifest='{"image":"nginx:1.25"}'))
+        prompt = predeploy_prompt.build(
+            make_manifest_request(parsed_manifest='{"image":"nginx:1.25"}')
+        )
         assert "nginx:1.25" in prompt
 
     def test_no_history_shows_placeholder(self):
@@ -177,7 +193,9 @@ class TestPredeployPromptBuild:
 
     def test_history_numbered(self):
         incidents = [make_past_incident(), make_past_incident()]
-        prompt = predeploy_prompt.build(make_manifest_request(related_history=incidents))
+        prompt = predeploy_prompt.build(
+            make_manifest_request(related_history=incidents)
+        )
         assert "1." in prompt
         assert "2." in prompt
 

@@ -5,9 +5,9 @@ import strawberry
 import structlog
 from strawberry.types import Info
 
+from app.auth import require_auth
 from app.graphql.types import AnalysisHistoryItem
 from app.grpc_clients import ai_client
-from app.auth import require_auth
 from app.grpc_errors import GrpcService, invoke_grpc
 
 logger = structlog.get_logger()
@@ -20,7 +20,9 @@ def _analysis_history(
     limit: int = 10,
 ) -> list[AnalysisHistoryItem]:
     user_id = require_auth(info)
-    logger.info("query_analysis_history", pod=pod_name, namespace=namespace, user_id=user_id)
+    logger.info(
+        "query_analysis_history", pod=pod_name, namespace=namespace, user_id=user_id
+    )
 
     response = invoke_grpc(
         GrpcService.AI,
@@ -50,5 +52,7 @@ def _analysis_history(
 
 
 @strawberry.field
-def analysis_history(info: Info, pod_name: str, namespace: str, limit: int = 10) -> list[AnalysisHistoryItem]:
+def analysis_history(
+    info: Info, pod_name: str, namespace: str, limit: int = 10
+) -> list[AnalysisHistoryItem]:
     return _analysis_history(info, pod_name, namespace, limit)

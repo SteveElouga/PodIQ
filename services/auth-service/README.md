@@ -238,6 +238,8 @@ cd services/auth-service
 python3 -m pytest -v
 ```
 
+Les contrôles **pre-commit** du monorepo s’exécutent depuis la **racine du dépôt** ; voir le README racine § « Pré-commit » et `pre-commit install`.
+
 ### 1. Démarrer uniquement l'auth-service
 
 ```bash

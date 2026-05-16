@@ -6,9 +6,9 @@ import structlog
 from django.conf import settings
 from strawberry.types import Info
 
-from app.graphql.types import AnalysisResultType
-from app.grpc_clients import analyzer_client, ai_client
 from app.auth import require_auth
+from app.graphql.types import AnalysisResultType
+from app.grpc_clients import ai_client, analyzer_client
 from app.grpc_errors import GrpcService, invoke_grpc
 from app.namespace_correlation import build_namespace_context
 from stubs.ai import ai_pb2
@@ -18,7 +18,9 @@ logger = structlog.get_logger()
 
 def _analyze_incident(info: Info, pod_name: str, namespace: str) -> AnalysisResultType:
     user_id = require_auth(info)
-    logger.info("mutation_analyze_incident", pod=pod_name, namespace=namespace, user_id=user_id)
+    logger.info(
+        "mutation_analyze_incident", pod=pod_name, namespace=namespace, user_id=user_id
+    )
 
     pod_data = invoke_grpc(
         GrpcService.ANALYZER,

@@ -3,6 +3,7 @@ Unit tests for build_namespace_context.
 No gRPC mock or database — pure data transformation.
 CORRELATION_WINDOW_SECONDS is patched to 900 s (15 min) in every test.
 """
+
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -10,7 +11,9 @@ REF_TS = 1_700_000_000
 WINDOW_SEC = 900
 
 
-def _pod(name: str, has_errors: bool = False, last_restart_time: int = 0) -> SimpleNamespace:
+def _pod(
+    name: str, has_errors: bool = False, last_restart_time: int = 0
+) -> SimpleNamespace:
     return SimpleNamespace(
         pod_name=name,
         status="CrashLoopBackOff" if has_errors else "Running",
@@ -27,6 +30,7 @@ def _run(snapshot, target_pod_name: str):
     with patch("app.namespace_correlation.settings") as mock_settings:
         mock_settings.CORRELATION_WINDOW_SECONDS = WINDOW_SEC
         from app.namespace_correlation import build_namespace_context
+
         return build_namespace_context(snapshot, target_pod_name)
 
 
@@ -43,25 +47,39 @@ class TestBuildNamespaceContext:
         assert "other-pod" in names
 
     def test_pod_inside_window_marked_correctly(self):
-        snap = _snapshot([_pod("peer", has_errors=True, last_restart_time=REF_TS - 400)])
+        snap = _snapshot(
+            [_pod("peer", has_errors=True, last_restart_time=REF_TS - 400)]
+        )
         (peer,) = _run(snap, "target")
         assert peer.in_correlation_window is True
         assert peer.seconds_before_reference == 400
 
     def test_pod_outside_window_marked_correctly(self):
-        snap = _snapshot([_pod("old-pod", has_errors=True, last_restart_time=REF_TS - 1000)])
+        snap = _snapshot(
+            [_pod("old-pod", has_errors=True, last_restart_time=REF_TS - 1000)]
+        )
         (old,) = _run(snap, "target")
         assert old.in_correlation_window is False
         assert old.seconds_before_reference == 0
 
     def test_pod_exactly_at_window_boundary_is_inside(self):
-        snap = _snapshot([_pod("edge", has_errors=True, last_restart_time=REF_TS - WINDOW_SEC)])
+        snap = _snapshot(
+            [_pod("edge", has_errors=True, last_restart_time=REF_TS - WINDOW_SEC)]
+        )
         (edge,) = _run(snap, "target")
         assert edge.in_correlation_window is True
         assert edge.seconds_before_reference == WINDOW_SEC
 
     def test_pod_one_second_past_boundary_is_outside(self):
-        snap = _snapshot([_pod("just-out", has_errors=True, last_restart_time=REF_TS - WINDOW_SEC - 1)])
+        snap = _snapshot(
+            [
+                _pod(
+                    "just-out",
+                    has_errors=True,
+                    last_restart_time=REF_TS - WINDOW_SEC - 1,
+                )
+            ]
+        )
         (just_out,) = _run(snap, "target")
         assert just_out.in_correlation_window is False
 
@@ -72,12 +90,17 @@ class TestBuildNamespaceContext:
         assert healthy.seconds_before_reference == 0
 
     def test_pod_restart_after_reference_is_outside_window(self):
-        snap = _snapshot([_pod("future", has_errors=True, last_restart_time=REF_TS + 60)])
+        snap = _snapshot(
+            [_pod("future", has_errors=True, last_restart_time=REF_TS + 60)]
+        )
         (future,) = _run(snap, "target")
         assert future.in_correlation_window is False
 
     def test_snapshot_without_collected_at_disables_window(self):
-        snap = _snapshot([_pod("peer", has_errors=True, last_restart_time=REF_TS - 100)], collected_at=0)
+        snap = _snapshot(
+            [_pod("peer", has_errors=True, last_restart_time=REF_TS - 100)],
+            collected_at=0,
+        )
         (peer,) = _run(snap, "target")
         assert peer.in_correlation_window is False
 
@@ -95,7 +118,9 @@ class TestBuildNamespaceContext:
         assert names.index("healthy-in") < names.index("healthy-out")
 
     def test_pod_context_fields_populated(self):
-        snap = _snapshot([_pod("worker", has_errors=True, last_restart_time=REF_TS - 300)])
+        snap = _snapshot(
+            [_pod("worker", has_errors=True, last_restart_time=REF_TS - 300)]
+        )
         (worker,) = _run(snap, "target")
         assert worker.pod_name == "worker"
         assert worker.status == "CrashLoopBackOff"
