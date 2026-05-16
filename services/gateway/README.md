@@ -18,7 +18,7 @@ Le Gateway est le **seul point d'entrée** de PodIQ pour les clients externes. I
 - Orchestrer les appels gRPC entre les services backend dans le bon ordre
 - Assembler les résultats et les retourner au client dans le format GraphQL attendu
 - Déléguer l'authentification à l'auth-service
-- (Futur) Exposer un endpoint **REST** sur `/cicd/scan` pour les pipelines CI/CD
+- Exposer un endpoint **REST** sur `/api/v1/cicd/scan` pour les pipelines CI/CD (auth via `X-Api-Key`, exit codes 0/1/2)
 
 Il ne fait **aucun appel direct à Kubernetes**, **aucun appel à Ollama**, et **n'accède à aucune base de données autre que la sienne** (sessions Django).
 
@@ -242,6 +242,82 @@ query {
 
 ---
 
+## Endpoint REST CI/CD
+
+### `POST /api/v1/cicd/scan` — Scanner un manifest depuis un pipeline
+
+Endpoint REST dédié aux pipelines CI/CD. Authentification par **API Key** (pas de JWT).
+
+**Headers :**
+```
+X-Api-Key: <clé brute créée via CreateApiKey>
+Content-Type: application/json
+```
+
+**Body JSON :**
+```json
+{
+  "yaml_content": "<contenu du manifest YAML>",
+  "manifest_type": "Deployment"
+}
+```
+`manifest_type` est optionnel.
+
+**Réponse 200 :**
+```json
+{
+  "exit_code": 0,
+  "risk_level": "safe",
+  "summary": "No critical issues found.",
+  "risks": []
+}
+```
+
+**Exit codes :**
+| Code | `risk_level` | Signification |
+|------|-------------|---------------|
+| `0`  | `safe`      | Déploiement autorisé |
+| `1`  | `warning`   | Déploiement autorisé, révision recommandée |
+| `2`  | `block`     | Déploiement bloqué — risques critiques détectés |
+
+**Erreurs :**
+| HTTP | `code` | Cause |
+|------|--------|-------|
+| `401` | `PODIQ_TOKEN_MISSING` | Header `X-Api-Key` absent |
+| `401` | `PODIQ_TOKEN_INVALID` | Clé invalide ou révoquée |
+| `400` | `PODIQ_VALIDATION_ERROR` | `yaml_content` absent ou YAML invalide |
+| `502` | `PODIQ_AUTH_GRPC_ERROR` | auth-service indisponible |
+| `502` | `PODIQ_ANALYZER_GRPC_ERROR` | analyzer-service indisponible |
+| `502` | `PODIQ_AI_GRPC_ERROR` | AI service indisponible |
+
+**Ce que le Gateway fait en interne :**
+```
+1. Vérifie X-Api-Key → auth_client.validate_api_key(raw_key)
+   └── auth-service vérifie le hash SHA-256 et le statut is_active
+
+2. analyzer_client.parse_manifest(yaml_content, manifest_type)
+   └── L'analyzer-service structure le YAML
+
+3. ai_client.scan_manifest(parsed.raw_config, related_history=[])
+   └── L'AI Service détecte les risques via Ollama
+
+4. Mappe risk_level → exit_code et retourne JSON
+```
+
+**Exemple curl :**
+```bash
+curl -X POST http://localhost:8080/api/v1/cicd/scan \
+  -H "X-Api-Key: <votre-clé>" \
+  -H "Content-Type: application/json" \
+  -d '{"yaml_content": "apiVersion: apps/v1\nkind: Deployment\n..."}'
+
+# Exit code pipeable :
+RESULT=$(curl -s ... | jq '.exit_code')
+exit $RESULT
+```
+
+---
+
 ## Schéma GraphQL complet
 
 ```
@@ -253,6 +329,9 @@ Mutation
 ├── scanManifest(yamlContent, manifestType) → ManifestScanResultType
 ├── register(email, password) → AuthPayload
 └── login(email, password) → AuthPayload
+
+REST
+└── POST /api/v1/cicd/scan → {exit_code, risk_level, summary, risks[]}
 ```
 
 ---
