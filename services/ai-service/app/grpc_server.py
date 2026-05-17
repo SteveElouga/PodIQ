@@ -26,6 +26,7 @@ django.setup()
 
 import grpc
 import structlog
+from django.db.models import Count
 from pydantic import ValidationError
 
 from app.ollama.client import chat
@@ -86,16 +87,43 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
             "get_analysis_history", pod=request.pod_name, namespace=request.namespace
         )
 
-        qs = Analysis.objects.filter(
-            analysis_type="incident",
-            pod_name=request.pod_name,
-            namespace=request.namespace,
-        ).order_by("-created_at")
+        filters: dict = {"pod_name": request.pod_name, "namespace": request.namespace}
+        if request.analysis_type:
+            filters["analysis_type"] = request.analysis_type
+        qs = Analysis.objects.filter(**filters).order_by("-created_at")
 
         limit = request.limit if request.limit > 0 else 10
+        page: list[Analysis] = list(qs[:limit])
+
+        # Single aggregation query for all predeploy counts — avoids N+1
+        predeploy_keys = {
+            (a.pod_name, a.namespace, a.error_type)
+            for a in page
+            if a.analysis_type == "predeploy"
+        }
+        predeploy_counts: dict[tuple[str, str, str], int] = {}
+        if predeploy_keys:
+            rows = (
+                Analysis.objects.filter(analysis_type="predeploy")
+                .values("pod_name", "namespace", "error_type")
+                .annotate(cnt=Count("id"))
+            )
+            predeploy_counts = {
+                (r["pod_name"], r["namespace"], r["error_type"]): r["cnt"] for r in rows
+            }
+
         items = []
-        for a in qs[:limit]:
-            pattern_count = _get_recurrence_count(a.pod_name, a.namespace, a.error_type)
+        for a in page:
+            if a.analysis_type == "predeploy":
+                recurrence_count = predeploy_counts.get(
+                    (a.pod_name, a.namespace, a.error_type), 1
+                )
+                is_recurring = recurrence_count > 1
+            else:
+                recurrence_count = _get_recurrence_count(
+                    a.pod_name, a.namespace, a.error_type
+                )
+                is_recurring = a.is_recurring
             items.append(
                 ai_pb2.HistoryItem(
                     id=str(a.id),
@@ -105,9 +133,11 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
                     root_cause=a.root_cause,
                     solution=a.solution,
                     confidence=a.confidence,
-                    is_recurring=a.is_recurring,
-                    recurrence_count=pattern_count,
+                    is_recurring=is_recurring,
+                    recurrence_count=recurrence_count,
                     created_at=int(a.created_at.timestamp()),
+                    analysis_type=a.analysis_type,
+                    risk_level=a.risk_level or "",
                 )
             )
 
@@ -129,6 +159,15 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(exc))
             return ai_pb2.ManifestScanResult()
+
+        _save_predeploy_analysis(request, result)
+        _upsert_predeploy_pattern(request, result)
+        logger.info(
+            "scan_manifest_complete",
+            manifest=request.manifest_name,
+            namespace=request.manifest_namespace,
+            risk_level=result.risk_level,
+        )
 
         risks = [
             ai_pb2.RiskItem(
@@ -188,9 +227,85 @@ def _parse_scan(raw: str) -> ManifestScanResponse:
 # ── Persistence ───────────────────────────────────────────────────────────────
 
 
+def _save_predeploy_analysis(
+    request: ai_pb2.ManifestScanRequest, result: ManifestScanResponse
+) -> None:
+    try:
+        user_uuid = uuid.UUID(request.user_id)
+    except (ValueError, AttributeError):
+        logger.warning("predeploy_invalid_user_id", user_id=request.user_id)
+        return
+    _RISK_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    sorted_risks = sorted(
+        result.risks, key=lambda r: _RISK_SEVERITY_ORDER.get(r.severity, 99)
+    )
+    top_risk = sorted_risks[0] if sorted_risks else None
+
+    error_type = top_risk.category if top_risk else result.risk_level
+    root_cause = "\n".join(
+        f"[{r.severity.upper()}] {r.description}" for r in sorted_risks if r.description
+    )
+    solution = "\n".join(
+        f"[{r.severity.upper()}] {r.fix}" for r in sorted_risks if r.fix
+    )
+    confidence_map = {"block": "high", "warning": "medium", "safe": "low"}
+    confidence = confidence_map.get(result.risk_level, "low")
+
+    # Check for existing pattern before saving so is_recurring is accurate
+    is_recurring = (
+        IncidentPattern.objects.filter(
+            pod_name=request.manifest_name,
+            namespace=request.manifest_namespace,
+            error_type=error_type,
+        ).exists()
+        if request.manifest_name and error_type
+        else False
+    )
+
+    Analysis.objects.create(
+        user_id=user_uuid,
+        analysis_type="predeploy",
+        pod_name=request.manifest_name,
+        namespace=request.manifest_namespace,
+        error_type=error_type,
+        root_cause=root_cause,
+        explanation=result.summary,
+        solution=solution,
+        confidence=confidence,
+        is_recurring=is_recurring,
+        risk_level=result.risk_level,
+        risks=[
+            {
+                "severity": r.severity,
+                "category": r.category,
+                "description": r.description,
+                "fix": r.fix,
+            }
+            for r in sorted_risks
+        ],
+    )
+
+
 def _save_analysis(
     request: ai_pb2.IncidentRequest, result: AnalysisResponse
 ) -> Analysis:
+    risks = [
+        {
+            "severity": result.confidence,
+            "category": result.error_type,
+            "description": result.root_cause,
+            "fix": result.solution,
+        }
+    ]
+    if result.correlated_service:
+        risks.append(
+            {
+                "severity": "medium",
+                "category": "correlation",
+                "description": result.correlation_explanation or "",
+                "fix": f"Investigate {result.correlated_service}",
+            }
+        )
     return Analysis.objects.create(
         user_id=uuid.uuid4(),  # replaced by gateway-provided user_id in full flow
         analysis_type="incident",
@@ -204,6 +319,7 @@ def _save_analysis(
         confidence=result.confidence,
         is_recurring=result.is_recurring,
         correlated_service=result.correlated_service or "",
+        risks=risks,
     )
 
 
@@ -219,6 +335,31 @@ def _upsert_pattern(request: ai_pb2.IncidentRequest, result: AnalysisResponse) -
     if not created:
         obj.occurrence_count += 1
         obj.last_solution = result.solution
+        obj.save(update_fields=["occurrence_count", "last_solution", "last_seen"])
+
+
+def _upsert_predeploy_pattern(
+    request: ai_pb2.ManifestScanRequest, result: ManifestScanResponse
+) -> None:
+    if not request.manifest_name:
+        return
+    _RISK_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    sorted_risks = sorted(
+        result.risks, key=lambda r: _RISK_SEVERITY_ORDER.get(r.severity, 99)
+    )
+    top_risk = sorted_risks[0] if sorted_risks else None
+    error_type = top_risk.category if top_risk else result.risk_level
+    solution = "; ".join(r.fix for r in sorted_risks if r.fix)[:500]
+
+    obj, created = IncidentPattern.objects.get_or_create(
+        pod_name=request.manifest_name,
+        namespace=request.manifest_namespace,
+        error_type=error_type,
+        defaults={"last_solution": solution},
+    )
+    if not created:
+        obj.occurrence_count += 1
+        obj.last_solution = solution
         obj.save(update_fields=["occurrence_count", "last_solution", "last_seen"])
 
 

@@ -18,6 +18,7 @@ def _analysis_history(
     pod_name: str,
     namespace: str,
     limit: int = 10,
+    analysis_type: str = "",
 ) -> list[AnalysisHistoryItem]:
     user_id = require_auth(info)
     logger.info(
@@ -31,6 +32,7 @@ def _analysis_history(
             pod_name=pod_name,
             namespace=namespace,
             limit=limit,
+            analysis_type=analysis_type,
         ),
     )
 
@@ -46,6 +48,8 @@ def _analysis_history(
             is_recurring=item.is_recurring,
             recurrence_count=item.recurrence_count,
             created_at=datetime.datetime.fromtimestamp(item.created_at).isoformat(),
+            analysis_type=item.analysis_type,
+            risk_level=item.risk_level,
         )
         for item in response.items
     ]
@@ -53,6 +57,6 @@ def _analysis_history(
 
 @strawberry.field
 def analysis_history(
-    info: Info, pod_name: str, namespace: str, limit: int = 10
+    info: Info, pod_name: str, namespace: str, limit: int = 10, analysis_type: str = ""
 ) -> list[AnalysisHistoryItem]:
-    return _analysis_history(info, pod_name, namespace, limit)
+    return _analysis_history(info, pod_name, namespace, limit, analysis_type)

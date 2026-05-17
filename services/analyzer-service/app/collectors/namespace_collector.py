@@ -39,8 +39,8 @@ def _stub_scan_namespace(namespace: str, incident_timestamp: int) -> dict[str, A
                 "last_restart_time": 0,
             },
             {
-                "pod_name": "worker-6b8c",
-                "status": "CrashLoopBackOff",
+                "pod_name": "postgres-primary-0",
+                "status": "OOMKilled",
                 "has_errors": True,
                 "last_restart_time": ref_ts - 300,
             },

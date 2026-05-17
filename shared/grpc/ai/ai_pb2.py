@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x61i/ai.proto\x12\x02\x61i\"\xb2\x01\n\x0fIncidentRequest\x12\x10\n\x08pod_name\x18\x01 \x01(\t\x12\x11\n\tnamespace\x18\x02 \x01(\t\x12\x0e\n\x06status\x18\x03 \x01(\t\x12\x0c\n\x04logs\x18\x04 \x01(\t\x12\x0e\n\x06\x65vents\x18\x05 \x01(\t\x12!\n\x07history\x18\x06 \x03(\x0b\x32\x10.ai.PastIncident\x12)\n\x11namespace_context\x18\x07 \x03(\x0b\x32\x0e.ai.PodContext\"]\n\x0cPastIncident\x12\x12\n\nerror_type\x18\x01 \x01(\t\x12\x12\n\nroot_cause\x18\x02 \x01(\t\x12\x10\n\x08solution\x18\x03 \x01(\t\x12\x13\n\x0boccurred_at\x18\x04 \x01(\x03\"\x9c\x01\n\nPodContext\x12\x10\n\x08pod_name\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x12\n\nhad_issues\x18\x03 \x01(\x08\x12\x17\n\x0fissue_timestamp\x18\x04 \x01(\x03\x12\x1d\n\x15in_correlation_window\x18\x05 \x01(\x08\x12 \n\x18seconds_before_reference\x18\x06 \x01(\x05\"\xe0\x01\n\x0e\x41nalysisResult\x12\x12\n\nerror_type\x18\x01 \x01(\t\x12\x12\n\nroot_cause\x18\x02 \x01(\t\x12\x13\n\x0b\x65xplanation\x18\x03 \x01(\t\x12\x10\n\x08solution\x18\x04 \x01(\t\x12\x12\n\nconfidence\x18\x05 \x01(\t\x12\x14\n\x0cis_recurring\x18\x06 \x01(\x08\x12\x18\n\x10recurrence_count\x18\x07 \x01(\x05\x12\x1a\n\x12\x63orrelated_service\x18\x08 \x01(\t\x12\x1f\n\x17\x63orrelation_explanation\x18\t \x01(\t\"Y\n\x13ManifestScanRequest\x12\x17\n\x0fparsed_manifest\x18\x01 \x01(\t\x12)\n\x0frelated_history\x18\x02 \x03(\x0b\x32\x10.ai.PastIncident\"V\n\x12ManifestScanResult\x12\x12\n\nrisk_level\x18\x01 \x01(\t\x12\x1b\n\x05risks\x18\x02 \x03(\x0b\x32\x0c.ai.RiskItem\x12\x0f\n\x07summary\x18\x03 \x01(\t\"P\n\x08RiskItem\x12\x10\n\x08severity\x18\x01 \x01(\t\x12\x10\n\x08\x63\x61tegory\x18\x02 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x03 \x01(\t\x12\x0b\n\x03\x66ix\x18\x04 \x01(\t\"D\n\x0eHistoryRequest\x12\x10\n\x08pod_name\x18\x01 \x01(\t\x12\x11\n\tnamespace\x18\x02 \x01(\t\x12\r\n\x05limit\x18\x03 \x01(\x05\"\xd0\x01\n\x0bHistoryItem\x12\n\n\x02id\x18\x01 \x01(\t\x12\x10\n\x08pod_name\x18\x02 \x01(\t\x12\x11\n\tnamespace\x18\x03 \x01(\t\x12\x12\n\nerror_type\x18\x04 \x01(\t\x12\x12\n\nroot_cause\x18\x05 \x01(\t\x12\x10\n\x08solution\x18\x06 \x01(\t\x12\x12\n\nconfidence\x18\x07 \x01(\t\x12\x14\n\x0cis_recurring\x18\x08 \x01(\x08\x12\x18\n\x10recurrence_count\x18\t \x01(\x05\x12\x12\n\ncreated_at\x18\n \x01(\x03\"1\n\x0fHistoryResponse\x12\x1e\n\x05items\x18\x01 \x03(\x0b\x32\x0f.ai.HistoryItem2\xc7\x01\n\tAIService\x12:\n\x0f\x41nalyzeIncident\x12\x13.ai.IncidentRequest\x1a\x12.ai.AnalysisResult\x12?\n\x0cScanManifest\x12\x17.ai.ManifestScanRequest\x1a\x16.ai.ManifestScanResult\x12=\n\x12GetAnalysisHistory\x12\x12.ai.HistoryRequest\x1a\x13.ai.HistoryResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x61i/ai.proto\x12\x02\x61i\"\xb2\x01\n\x0fIncidentRequest\x12\x10\n\x08pod_name\x18\x01 \x01(\t\x12\x11\n\tnamespace\x18\x02 \x01(\t\x12\x0e\n\x06status\x18\x03 \x01(\t\x12\x0c\n\x04logs\x18\x04 \x01(\t\x12\x0e\n\x06\x65vents\x18\x05 \x01(\t\x12!\n\x07history\x18\x06 \x03(\x0b\x32\x10.ai.PastIncident\x12)\n\x11namespace_context\x18\x07 \x03(\x0b\x32\x0e.ai.PodContext\"]\n\x0cPastIncident\x12\x12\n\nerror_type\x18\x01 \x01(\t\x12\x12\n\nroot_cause\x18\x02 \x01(\t\x12\x10\n\x08solution\x18\x03 \x01(\t\x12\x13\n\x0boccurred_at\x18\x04 \x01(\x03\"\x9c\x01\n\nPodContext\x12\x10\n\x08pod_name\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x12\n\nhad_issues\x18\x03 \x01(\x08\x12\x17\n\x0fissue_timestamp\x18\x04 \x01(\x03\x12\x1d\n\x15in_correlation_window\x18\x05 \x01(\x08\x12 \n\x18seconds_before_reference\x18\x06 \x01(\x05\"\xe0\x01\n\x0e\x41nalysisResult\x12\x12\n\nerror_type\x18\x01 \x01(\t\x12\x12\n\nroot_cause\x18\x02 \x01(\t\x12\x13\n\x0b\x65xplanation\x18\x03 \x01(\t\x12\x10\n\x08solution\x18\x04 \x01(\t\x12\x12\n\nconfidence\x18\x05 \x01(\t\x12\x14\n\x0cis_recurring\x18\x06 \x01(\x08\x12\x18\n\x10recurrence_count\x18\x07 \x01(\x05\x12\x1a\n\x12\x63orrelated_service\x18\x08 \x01(\t\x12\x1f\n\x17\x63orrelation_explanation\x18\t \x01(\t\"\xb4\x01\n\x13ManifestScanRequest\x12\x17\n\x0fparsed_manifest\x18\x01 \x01(\t\x12)\n\x0frelated_history\x18\x02 \x03(\x0b\x32\x10.ai.PastIncident\x12\x0f\n\x07user_id\x18\x03 \x01(\t\x12\x15\n\rmanifest_name\x18\x04 \x01(\t\x12\x1a\n\x12manifest_namespace\x18\x05 \x01(\t\x12\x15\n\rmanifest_type\x18\x06 \x01(\t\"V\n\x12ManifestScanResult\x12\x12\n\nrisk_level\x18\x01 \x01(\t\x12\x1b\n\x05risks\x18\x02 \x03(\x0b\x32\x0c.ai.RiskItem\x12\x0f\n\x07summary\x18\x03 \x01(\t\"P\n\x08RiskItem\x12\x10\n\x08severity\x18\x01 \x01(\t\x12\x10\n\x08\x63\x61tegory\x18\x02 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x03 \x01(\t\x12\x0b\n\x03\x66ix\x18\x04 \x01(\t\"[\n\x0eHistoryRequest\x12\x10\n\x08pod_name\x18\x01 \x01(\t\x12\x11\n\tnamespace\x18\x02 \x01(\t\x12\r\n\x05limit\x18\x03 \x01(\x05\x12\x15\n\ranalysis_type\x18\x04 \x01(\t\"\xfb\x01\n\x0bHistoryItem\x12\n\n\x02id\x18\x01 \x01(\t\x12\x10\n\x08pod_name\x18\x02 \x01(\t\x12\x11\n\tnamespace\x18\x03 \x01(\t\x12\x12\n\nerror_type\x18\x04 \x01(\t\x12\x12\n\nroot_cause\x18\x05 \x01(\t\x12\x10\n\x08solution\x18\x06 \x01(\t\x12\x12\n\nconfidence\x18\x07 \x01(\t\x12\x14\n\x0cis_recurring\x18\x08 \x01(\x08\x12\x18\n\x10recurrence_count\x18\t \x01(\x05\x12\x12\n\ncreated_at\x18\n \x01(\x03\x12\x15\n\ranalysis_type\x18\x0b \x01(\t\x12\x12\n\nrisk_level\x18\x0c \x01(\t\"1\n\x0fHistoryResponse\x12\x1e\n\x05items\x18\x01 \x03(\x0b\x32\x0f.ai.HistoryItem2\xc7\x01\n\tAIService\x12:\n\x0f\x41nalyzeIncident\x12\x13.ai.IncidentRequest\x1a\x12.ai.AnalysisResult\x12?\n\x0cScanManifest\x12\x17.ai.ManifestScanRequest\x1a\x16.ai.ManifestScanResult\x12=\n\x12GetAnalysisHistory\x12\x12.ai.HistoryRequest\x1a\x13.ai.HistoryResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -39,18 +39,18 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_PODCONTEXT']._serialized_end=452
   _globals['_ANALYSISRESULT']._serialized_start=455
   _globals['_ANALYSISRESULT']._serialized_end=679
-  _globals['_MANIFESTSCANREQUEST']._serialized_start=681
-  _globals['_MANIFESTSCANREQUEST']._serialized_end=770
-  _globals['_MANIFESTSCANRESULT']._serialized_start=772
-  _globals['_MANIFESTSCANRESULT']._serialized_end=858
-  _globals['_RISKITEM']._serialized_start=860
-  _globals['_RISKITEM']._serialized_end=940
-  _globals['_HISTORYREQUEST']._serialized_start=942
-  _globals['_HISTORYREQUEST']._serialized_end=1010
-  _globals['_HISTORYITEM']._serialized_start=1013
-  _globals['_HISTORYITEM']._serialized_end=1221
-  _globals['_HISTORYRESPONSE']._serialized_start=1223
-  _globals['_HISTORYRESPONSE']._serialized_end=1272
-  _globals['_AISERVICE']._serialized_start=1275
-  _globals['_AISERVICE']._serialized_end=1474
+  _globals['_MANIFESTSCANREQUEST']._serialized_start=682
+  _globals['_MANIFESTSCANREQUEST']._serialized_end=862
+  _globals['_MANIFESTSCANRESULT']._serialized_start=864
+  _globals['_MANIFESTSCANRESULT']._serialized_end=950
+  _globals['_RISKITEM']._serialized_start=952
+  _globals['_RISKITEM']._serialized_end=1032
+  _globals['_HISTORYREQUEST']._serialized_start=1034
+  _globals['_HISTORYREQUEST']._serialized_end=1125
+  _globals['_HISTORYITEM']._serialized_start=1128
+  _globals['_HISTORYITEM']._serialized_end=1379
+  _globals['_HISTORYRESPONSE']._serialized_start=1381
+  _globals['_HISTORYRESPONSE']._serialized_end=1430
+  _globals['_AISERVICE']._serialized_start=1433
+  _globals['_AISERVICE']._serialized_end=1632
 # @@protoc_insertion_point(module_scope)

@@ -21,6 +21,7 @@ def chat(prompt: str, system: str) -> str:
         ],
         "stream": False,
         "format": "json",
+        "options": {"temperature": 0.1},
     }
 
     logger.info("ollama_request", model=OLLAMA_MODEL, host=OLLAMA_HOST)

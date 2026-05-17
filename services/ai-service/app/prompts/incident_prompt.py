@@ -33,7 +33,7 @@ Return ONLY this JSON:
   "error_type": "short error category (e.g. CrashLoopBackOff, OOMKilled)",
   "root_cause": "one sentence — the probable root cause",
   "explanation": "2-3 sentences explaining what happened",
-  "solution": "step-by-step actionable solution",
+  "solution": "actionable solution as a single string (no list, no array)",
   "confidence": "high | medium | low",
   "is_recurring": true or false,
   "correlated_service": "pod name if another pod caused this, else null",

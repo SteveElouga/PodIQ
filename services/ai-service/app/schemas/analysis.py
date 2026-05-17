@@ -13,6 +13,15 @@ class AnalysisResponse(BaseModel):
     correlated_service: str | None = None
     correlation_explanation: str | None = None
 
+    @field_validator(
+        "solution", "root_cause", "explanation", "error_type", mode="before"
+    )
+    @classmethod
+    def coerce_to_str(cls, v: object) -> str:
+        if isinstance(v, list):
+            return " ".join(str(item) for item in v)
+        return str(v) if v is not None else ""
+
     @field_validator("confidence", mode="before")
     @classmethod
     def validate_confidence(cls, v: object) -> str:
