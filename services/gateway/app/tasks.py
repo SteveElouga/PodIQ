@@ -39,7 +39,8 @@ def analyze_incident_task(
 
     job = AnalysisJob.objects.get(id=job_id)
     job.status = AnalysisJob.Status.RUNNING
-    job.save(update_fields=["status", "updated_at"])
+    job.error = ""
+    job.save(update_fields=["status", "error", "updated_at"])
 
     logger.info("task_analyze_start", job_id=job_id, pod=pod_name, namespace=namespace)
 
@@ -108,7 +109,12 @@ def analyze_incident_task(
             "correlation_explanation": result.correlation_explanation or None,
         }
         job.save(update_fields=["status", "result", "updated_at"])
-        logger.info("task_analyze_complete", job_id=job_id, pod=pod_name)
+        logger.info(
+            "task_analyze_complete",
+            job_id=job_id,
+            pod=pod_name,
+            is_recurring=result.is_recurring,
+        )
 
     except Exception as exc:
         job.status = AnalysisJob.Status.FAILED

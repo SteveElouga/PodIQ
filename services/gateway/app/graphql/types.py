@@ -41,6 +41,16 @@ class AnalysisHistoryItem:
     is_recurring: bool
     recurrence_count: int
     created_at: str
+    analysis_type: str
+    risk_level: str
+
+
+@strawberry.type
+class ApiKeyPayload:
+    key_id: str
+    raw_key: str
+    name: str
+    created_at: str
 
 
 @strawberry.type

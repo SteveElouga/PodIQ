@@ -135,6 +135,10 @@ def scan(request: HttpRequest) -> JsonResponse:
         partial(
             ai_client.scan_manifest,
             parsed_manifest=parsed.raw_config,
+            user_id=user_id,
+            manifest_name=parsed.name,
+            manifest_namespace=parsed.namespace,
+            manifest_type=parsed.manifest_type,
             related_history=[],
         ),
     )

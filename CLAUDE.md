@@ -170,7 +170,7 @@ python -m grpc_tools.protoc -I. --python_out=../shared/grpc --grpc_python_out=..
 
 ## Redis
 
-See **[REDIS.md](./REDIS.md)** for the complete Redis guidelines.
+See **[REDIS.md](./docs/REDIS.md)** for the complete Redis guidelines.
 
 Any time code touches Redis — cache reads/writes, Dramatiq queue, rate limiting, locks, or any new Redis usage — apply the rules in REDIS.md without exception:
 - Key naming: `podiq:{service}:{type}:{id}`
@@ -223,6 +223,7 @@ Copy `.env.example` to `.env` and configure:
 - `REDIS_MAXMEMORY` — limite mémoire du conteneur Redis (ex. `256mb` en dev), utilisée par `docker-compose` avec `--maxmemory-policy allkeys-lru`
 - `AI_TIMEOUT_SECONDS` — timeout HTTP ai-service → Ollama (défaut **30** dans le code ; souvent **120** en dev sur CPU)
 - Gateway : Gunicorn est lancé avec **`--timeout 180`** dans `services/gateway/Dockerfile` pour couvrir `analyzeIncident` pendant l’inférence ; sans cela, erreurs HTML/502 côté playground si le worker est tué à 30 s
+- Nginx : `proxy_read_timeout 180s` et `proxy_send_timeout 180s` configurés dans `infra/nginx/default.conf` — doit rester aligné sur le timeout Gunicorn pour éviter les 504 sur `scanManifest` (synchrone)
 - `OLLAMA_MODEL` — en dev, **`mistral`** recommandé pour gros prompts ; modèles type « thinking » peuvent échouer sur `/api/chat` malgré une RAM correcte
 - Logs applicatifs : **`PODIQ_SERVICE_NAME`**, **`LOG_FORMAT=json|console`** et **`LOG_LEVEL`** sont définis dans les **Dockerfiles** des services ; surcharge possible via Compose ou variables passées aux conteneurs.
 
@@ -264,7 +265,7 @@ python -m grpc_tools.protoc -I. --python_out=../shared/grpc --grpc_python_out=..
 4. ✅ Analyzer Service: CollectPod + ScanNamespace + ParseManifest
 5. ✅ AI Service: AnalyzeIncident + ScanManifest + GetAnalysisHistory
 6. ✅ Auth Service: Register + Login + ValidateJWT + CreateApiKey + ValidateApiKey + RevokeApiKey
-7. ✅ Gateway GraphQL: schema complet (analyzeIncident, scanManifest, register, login, analysisHistory)
+7. ✅ Gateway GraphQL: schema complet (analyzeIncident, scanManifest, register, login, createApiKey, revokeApiKey, analysisHistory)
 8. ✅ Loki + Promtail + Grafana configurés (labels service/namespace, rétention 7j)
 9. ✅ README.md dans chaque service (FR, avec analogies, I/O gRPC, DB, env vars)
 10. ✅ Memory Engine (gateway appelle GetHistory avant AnalyzeIncident, injecte history[])

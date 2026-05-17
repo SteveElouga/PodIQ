@@ -200,7 +200,7 @@ services:
       dockerfile: services/gateway/Dockerfile
     container_name: podiq-gateway-worker
     restart: unless-stopped
-    command: ["python", "-m", "dramatiq", "app.tasks", "--processes", "2", "--threads", "4"]
+    command: ["python", "-m", "dramatiq", "worker_main", "--processes", "2", "--threads", "4"]
     networks:
       - backend
     env_file:

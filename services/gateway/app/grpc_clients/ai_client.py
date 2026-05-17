@@ -18,6 +18,10 @@ def analyze_incident(
 
 def scan_manifest(
     parsed_manifest: str,
+    user_id: str = "",
+    manifest_name: str = "",
+    manifest_namespace: str = "",
+    manifest_type: str = "",
     related_history: list[ai_pb2.PastIncident] | None = None,
 ) -> ai_pb2.ManifestScanResult:
     with _channel() as channel:
@@ -25,13 +29,17 @@ def scan_manifest(
         return stub.ScanManifest(
             ai_pb2.ManifestScanRequest(
                 parsed_manifest=parsed_manifest,
+                user_id=user_id,
+                manifest_name=manifest_name,
+                manifest_namespace=manifest_namespace,
+                manifest_type=manifest_type,
                 related_history=related_history or [],
             )
         )
 
 
 def get_history(
-    pod_name: str, namespace: str, limit: int = 10
+    pod_name: str, namespace: str, limit: int = 10, analysis_type: str = ""
 ) -> ai_pb2.HistoryResponse:
     with _channel() as channel:
         stub = ai_pb2_grpc.AIServiceStub(channel)
@@ -40,5 +48,6 @@ def get_history(
                 pod_name=pod_name,
                 namespace=namespace,
                 limit=limit,
+                analysis_type=analysis_type,
             )
         )

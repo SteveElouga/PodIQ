@@ -217,7 +217,8 @@ success : bool
 
 Ce service est **appelé par** :
 - Le **Gateway** : pour les mutations `register` et `login` (GraphQL)
-- Le **Gateway** : pour valider les API Keys sur l'endpoint CI/CD (REST)
+- Le **Gateway** : pour les mutations `createApiKey` et `revokeApiKey` (GraphQL, JWT requis)
+- Le **Gateway** : pour valider les API Keys sur l'endpoint CI/CD (REST `POST /api/v1/cicd/scan`)
 
 Ce service **n'appelle personne**. Il est terminal dans la chaîne de dépendances.
 
@@ -276,8 +277,32 @@ mutation {
 }
 ```
 
+**Créer une clé API** (ajouter le header `Authorization: Bearer <token>` dans GraphiQL) :
+
+```graphql
+mutation {
+  createApiKey(name: "github-actions-prod") {
+    keyId
+    rawKey
+    name
+    createdAt
+  }
+}
+```
+
+> `rawKey` est retourné **une seule fois**. Copiez-le immédiatement — si perdu, révoquez et recréez.
+
+**Révoquer une clé API** :
+
+```graphql
+mutation {
+  revokeApiKey(keyId: "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb")
+}
+```
+
 ### 3. Vérifier en base
 
 ```bash
 docker compose exec postgres-auth psql -U podiq -d podiq_auth -c "SELECT id, email, created_at FROM users;"
+docker compose exec postgres-auth psql -U podiq -d podiq_auth -c "SELECT id, name, is_active, last_used FROM api_keys;"
 ```

@@ -143,10 +143,15 @@ mutation {
 1. analyzer_client.parse_manifest(yaml_content, manifest_type)
    └── L'analyzer-service parse et structure le YAML
 
-2. ai_client.scan_manifest(parsed_manifest, related_history=[])
-   └── L'AI Service envoie à Ollama pour détecter les risques
+2. Memory Engine — ai_client.get_history(pod_name=manifest_name, namespace, limit=5)
+   └── Récupère les incidents passés liés à ce manifest/namespace
+   └── Si ai-service indisponible → dégradation gracieuse, history=[] (scan non bloqué)
 
-3. Retourne ManifestScanResultType
+3. ai_client.scan_manifest(parsed_manifest, user_id, manifest_name, manifest_namespace, manifest_type, related_history)
+   └── L'AI Service envoie à Ollama pour détecter les risques, enrichi par l'historique
+   └── Persiste le résultat dans postgres-ai (analysis_type="predeploy")
+
+4. Retourne ManifestScanResultType
 ```
 
 **Sortie :**
@@ -177,6 +182,10 @@ mutation {
 
 **Ce que le Gateway fait en interne :**
 ```
+0. Validation du format email (_validate_email)
+   └── Regex RFC : doit contenir @, domaine, TLD ≥ 2 chars
+   └── Si invalide → GraphQLError PODIQ_VALIDATION_ERROR (sans appel gRPC)
+
 1. auth_client.register(email, password)
    └── L'auth-service crée l'utilisateur et génère le JWT
 
@@ -206,6 +215,60 @@ mutation {
 ```
 
 **Sortie :** Identique à `register`.
+
+> La validation du format email s'applique aussi à `login` — un email invalide retourne `PODIQ_VALIDATION_ERROR` sans appel gRPC.
+
+---
+
+### `createApiKey` — Créer une clé API (CI/CD)
+
+Nécessite un JWT valide (`Authorization: Bearer <token>`). Retourne la clé brute **une seule fois** — à copier immédiatement.
+
+**Entrée :**
+```graphql
+mutation {
+  createApiKey(name: "github-actions-prod") {
+    keyId
+    rawKey
+    name
+    createdAt
+  }
+}
+```
+
+**Ce que le Gateway fait en interne :**
+```
+1. require_auth(info) → vérifie le JWT, extrait user_id
+2. auth_client.create_api_key(user_id, name)
+   └── auth-service génère une clé aléatoire (secrets.token_urlsafe(32))
+   └── Stocke le hash SHA-256 dans api_keys, retourne la clé brute une seule fois
+3. Retourne ApiKeyPayload{keyId, rawKey, name, createdAt}
+```
+
+**Sortie :**
+```
+keyId     : String  — UUID de la clé (pour revokeApiKey)
+rawKey    : String  — clé brute (ex: "abc123...") — à conserver, non récupérable ensuite
+name      : String  — nom donné à la clé
+createdAt : String  — ISO 8601
+```
+
+> **Important :** `rawKey` n'est jamais stocké en clair côté serveur (SHA-256). Si vous le perdez, révoquez la clé et créez-en une nouvelle.
+
+---
+
+### `revokeApiKey` — Révoquer une clé API
+
+**Entrée :**
+```graphql
+mutation {
+  revokeApiKey(keyId: "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb")
+}
+```
+
+**Sortie :** `Boolean` — `true` si révoquée, `false` si introuvable.
+
+Le Gateway vérifie que la clé appartient bien à l'utilisateur authentifié (via `user_id` extrait du JWT) avant de la révoquer.
 
 ---
 
@@ -250,12 +313,17 @@ query {
 
 ---
 
-### `analysisHistory` — Consulter l'historique d'un pod
+### `analysisHistory` — Consulter l'historique d'un pod ou manifest
 
 **Entrée :**
 ```graphql
 query {
-  analysisHistory(podName: "mon-pod", namespace: "default", limit: 10) {
+  analysisHistory(
+    podName: "mon-pod"
+    namespace: "default"
+    limit: 10
+    analysisType: "incident"   # optionnel : "" | "incident" | "predeploy"
+  ) {
     id
     podName
     namespace
@@ -266,14 +334,17 @@ query {
     isRecurring
     recurrenceCount
     createdAt
+    analysisType
+    riskLevel
   }
 }
 ```
 
 **Ce que le Gateway fait en interne :**
 ```
-1. ai_client.get_history(pod_name, namespace, limit)
-   └── L'AI Service lit ses analyses en base
+1. ai_client.get_history(pod_name, namespace, limit, analysis_type)
+   └── Si analysis_type="" → retourne incidents + predeploy
+   └── Si analysis_type="predeploy" → uniquement les scans manifest
 
 2. Convertit les unix timestamps en ISO 8601 (ex: "2026-05-11T14:32:00")
 
@@ -338,8 +409,9 @@ Content-Type: application/json
 2. analyzer_client.parse_manifest(yaml_content, manifest_type)
    └── L'analyzer-service structure le YAML
 
-3. ai_client.scan_manifest(parsed.raw_config, related_history=[])
+3. ai_client.scan_manifest(parsed.raw_config, user_id, manifest_name, manifest_namespace, manifest_type, related_history=[])
    └── L'AI Service détecte les risques via Ollama
+   └── Persiste le résultat dans postgres-ai (analysis_type="predeploy")
 
 4. Mappe risk_level → exit_code et retourne JSON
 ```
@@ -363,13 +435,15 @@ exit $RESULT
 ```
 Query
 ├── analysisJob(jobId) → AnalysisJobType          ← polling async
-└── analysisHistory(podName, namespace, limit) → [AnalysisHistoryItem]
+└── analysisHistory(podName, namespace, limit, analysisType?) → [AnalysisHistoryItem]
 
 Mutation
 ├── analyzeIncident(podName, namespace) → AnalysisJobType  ← retourne immédiatement (async)
 ├── scanManifest(yamlContent, manifestType) → ManifestScanResultType
 ├── register(email, password) → AuthPayload
-└── login(email, password) → AuthPayload
+├── login(email, password) → AuthPayload
+├── createApiKey(name) → ApiKeyPayload         ← JWT requis
+└── revokeApiKey(keyId) → Boolean              ← JWT requis
 
 REST
 └── POST /api/v1/cicd/scan → {exit_code, risk_level, summary, risks[]}
@@ -385,15 +459,34 @@ Le Gateway maintient un client gRPC léger pour chaque service backend.
 |----------------------|-------------------|-------|-------------------------------------------------|
 | `analyzer_client.py` | analyzer-service  | 50052 | `collect_pod`, `scan_namespace`, `parse_manifest`|
 | `ai_client.py`       | ai-service        | 50053 | `analyze_incident`, `scan_manifest`, `get_history`|
-| `auth_client.py`     | auth-service      | 50051 | `register`, `login`, `validate_api_key`         |
+| `auth_client.py`     | auth-service      | 50051 | `register`, `login`, `validate_api_key`, `create_api_key`, `revoke_api_key` |
 
 Chaque appel gRPC ouvre un canal dédié (simple, sans pool — à optimiser avec Redis en Étape 11).
 
-### Processus HTTP et timeout Gunicorn
+### Processus HTTP et timeouts
 
-Le conteneur démarre Gunicorn avec **`--timeout 180`** (voir `Dockerfile`). La mutation `analyzeIncident` est maintenant **asynchrone** — elle retourne immédiatement et ne bloque plus le worker. En revanche, `scanManifest` reste **synchrone** : elle attend la fin de l’inférence Ollama, ce qui peut dépasser la valeur par défaut de Gunicorn (**30 s**) et tuer le worker, provoquant une réponse **HTML 502** au lieu de JSON.
+La chaîne de timeouts est configurée pour couvrir l’inférence Ollama sur CPU :
 
-Le timeout Gunicorn doit rester **au moins égal** à `AI_TIMEOUT_SECONDS` (souvent **120** s en dev sur CPU).
+| Couche | Valeur | Fichier |
+|--------|--------|---------|
+| Nginx `proxy_connect_timeout` | 10 s | `infra/nginx/default.conf` |
+| Nginx `proxy_read_timeout` | **180 s** | `infra/nginx/default.conf` |
+| Gunicorn `--timeout` | **180 s** | `services/gateway/Dockerfile` |
+
+`analyzeIncident` est **asynchrone** — retour immédiat, pas de blocage worker. `scanManifest` reste **synchrone** : attend la fin de l’inférence Ollama. Si Ollama dépasse 180 s, le client reçoit `grpc_message: "timed out"` (GraphQL error) et non une page HTML 504.
+
+### Worker Dramatiq (`gateway-worker`)
+
+Le worker est lancé via `worker_main.py` qui :
+1. Initialise Django (`django.setup()`) avant d’importer les acteurs Dramatiq — sans cela, l’import de `core.models` lève `AppRegistryNotReady`
+2. Enregistre `JobFailureMiddleware` : si une tâche épuise ses retries sans jamais atteindre le bloc `except` (ex. crash au démarrage), le middleware marque automatiquement le job `failed` en base
+
+```bash
+# Commande dans docker-compose.yml
+python -m dramatiq worker_main --processes 2 --threads 4
+```
+
+Les acteurs sont configurés avec `max_retries=2, time_limit=300_000` (5 min).
 
 ---
 

@@ -20,6 +20,64 @@ def make_auth_response(token="tok-abc", user_id="uid-123", email="user@test.com"
     return SimpleNamespace(token=token, user_id=user_id, email=email)
 
 
+# ── email validation ──────────────────────────────────────────────────────────
+
+
+class TestEmailValidation:
+    @pytest.mark.parametrize(
+        "bad_email",
+        [
+            "pas-un-email",
+            "@nodomain.com",
+            "no-at-sign",
+            "missing@",
+            "",
+        ],
+    )
+    def test_invalid_emails_raise_graphql_error(self, bad_email):
+        from app.graphql.mutations.auth import _validate_email
+
+        with pytest.raises(GraphQLError) as exc_info:
+            _validate_email(bad_email)
+
+        assert exc_info.value.message == "Invalid email address"
+        assert (
+            exc_info.value.extensions[GRAPHQL_EXTENSION_CODE]
+            == ErrorCode.VALIDATION.value
+        )
+
+    @pytest.mark.parametrize(
+        "good_email",
+        [
+            "user@test.com",
+            "alice.bob+tag@sub.domain.org",
+            "x@y.io",
+        ],
+    )
+    def test_valid_emails_pass(self, good_email):
+        from app.graphql.mutations.auth import _validate_email
+
+        _validate_email(good_email)  # must not raise
+
+    def test_register_invalid_email_does_not_call_grpc(self):
+        with patch("app.graphql.mutations.auth.auth_client.register") as mock_fn:
+            from app.graphql.mutations.auth import _register as register
+
+            with pytest.raises(GraphQLError):
+                register(info=None, email="pas-un-email", password="pass")
+
+        mock_fn.assert_not_called()
+
+    def test_login_invalid_email_does_not_call_grpc(self):
+        with patch("app.graphql.mutations.auth.auth_client.login") as mock_fn:
+            from app.graphql.mutations.auth import _login as login
+
+            with pytest.raises(GraphQLError):
+                login(info=None, email="pas-un-email", password="pass")
+
+        mock_fn.assert_not_called()
+
+
 # ── register ──────────────────────────────────────────────────────────────────
 
 

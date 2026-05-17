@@ -36,40 +36,43 @@ Ce service possède sa propre instance PostgreSQL : **`postgres-ai`** (port 5435
 
 Stocke chaque résultat d'analyse (incident, pré-déploiement, CI/CD).
 
-| Colonne              | Type      | Description                                        |
-|----------------------|-----------|----------------------------------------------------|
-| `id`                 | UUID (PK) | Identifiant unique de l'analyse                    |
-| `user_id`            | UUID      | Référence applicative vers auth-service (pas de FK)|
-| `analysis_type`      | string    | `incident` / `predeploy` / `cicd`                  |
-| `pod_name`           | string    | Nom du pod concerné                                |
-| `namespace`          | string    | Namespace Kubernetes                               |
-| `status`             | string    | Statut du pod au moment de l'analyse               |
-| `error_type`         | string    | Type d'erreur détecté (ex: `CrashLoopBackOff`)     |
-| `root_cause`         | text      | Cause racine identifiée par l'IA                   |
-| `explanation`        | text      | Explication détaillée pour l'ingénieur             |
-| `solution`           | text      | Actions correctives recommandées                   |
-| `confidence`         | string    | `high` / `medium` / `low`                          |
-| `is_recurring`       | boolean   | `true` si ce type d'erreur a déjà été vu           |
-| `correlated_service` | string    | Autre service impliqué dans la corrélation         |
-| `risks`              | JSON      | Risques identifiés (pour les scans de manifests)   |
-| `created_at`         | datetime  | Date de l'analyse                                  |
+| Colonne              | Type      | `incident`                              | `predeploy`                                      |
+|----------------------|-----------|-----------------------------------------|--------------------------------------------------|
+| `id`                 | UUID (PK) | —                                       | —                                                |
+| `user_id`            | UUID      | uuid4 temporaire (à corriger)           | UUID transmis par le gateway                     |
+| `analysis_type`      | string    | `"incident"`                            | `"predeploy"`                                    |
+| `pod_name`           | string    | Nom du pod Kubernetes                   | `metadata.name` du manifest                      |
+| `namespace`          | string    | Namespace Kubernetes                    | `metadata.namespace` du manifest                 |
+| `status`             | string    | Statut du pod (ex: `CrashLoopBackOff`)  | vide                                             |
+| `error_type`         | string    | Type d'erreur IA (ex: `CrashLoopBackOff`) | Catégorie du risk le plus critique (ex: `security`) |
+| `root_cause`         | text      | Cause racine IA                         | Descriptions agrégées par sévérité décroissante  |
+| `explanation`        | text      | Explication détaillée                   | Résumé Ollama (`summary`)                        |
+| `solution`           | text      | Action corrective IA                    | Fixes agrégés par sévérité décroissante          |
+| `confidence`         | string    | `high` / `medium` / `low`               | Dérivé du `risk_level` : `block`→`high`, `warning`→`medium`, `safe`→`low` |
+| `risk_level`         | string    | vide                                    | `safe` / `warning` / `block`                     |
+| `is_recurring`       | boolean   | `true` si pattern connu                 | `false`                                          |
+| `correlated_service` | string    | Autre service corrélé                   | vide                                             |
+| `risks`              | JSON      | `[{severity, category, description, fix}]` synthétique | `[{severity, category, description, fix}]` trié par sévérité |
+| `created_at`         | datetime  | —                                       | —                                                |
 
 ### Table `incident_patterns`
 
-Le **Memory Engine** : garde une trace des patterns récurrents.
+Le **Memory Engine** : garde une trace des patterns récurrents pour les incidents **et** les scans predeploy/CI/CD.
 
 | Colonne            | Type      | Description                                              |
 |--------------------|-----------|----------------------------------------------------------|
 | `id`               | UUID (PK) | Identifiant unique du pattern                            |
-| `pod_name`         | string    | Nom du pod                                               |
+| `pod_name`         | string    | Nom du pod (incident) ou `metadata.name` du manifest (predeploy) |
 | `namespace`        | string    | Namespace                                                |
-| `error_type`       | string    | Type d'erreur                                            |
+| `error_type`       | string    | Type d'erreur (incident) ou catégorie du risque le plus critique (predeploy) |
 | `occurrence_count` | int       | Nombre de fois que ce pattern a été observé              |
 | `first_seen`       | datetime  | Première occurrence                                      |
 | `last_seen`        | datetime  | Dernière occurrence (mis à jour automatiquement)         |
 | `last_solution`    | text      | Dernière solution proposée                               |
 
 **Contrainte unique** : `(pod_name, namespace, error_type)` — un seul enregistrement par combinaison, mis à jour à chaque nouvelle occurrence (upsert).
+
+> `ScanManifest` appelle aussi `_upsert_predeploy_pattern()` après chaque scan, de sorte que `recurrence_count` s'incrémente à chaque nouvelle analyse du même manifest avec le même type de risque dominant.
 
 ---
 
@@ -126,6 +129,7 @@ correlation_explanation : string  — explication de la corrélation (vide si au
 
 3. Validation Pydantic (schemas/analysis.py)
    └── Vérifie tous les champs requis (error_type, root_cause, solution, confidence, etc.)
+   └── coerce_to_str : si le modèle renvoie solution/root_cause/explanation/error_type sous forme de liste, les éléments sont joints en string (le prompt spécifie "single string" mais certains modèles ignorent la consigne)
    └── Si la réponse est invalide → fallback avec confidence="low" et champs par défaut
 
 4. Persistence (core/models.py)
@@ -145,8 +149,12 @@ Utilisé avant un déploiement (`kubectl apply`) pour détecter les risques de c
 
 **Entrée :**
 ```
-parsed_manifest  : string         — JSON sérialisé du ParsedManifest (vient de l'analyzer-service)
-related_history  : PastIncident[] — incidents passés liés à ce type de config
+parsed_manifest    : string         — JSON sérialisé du ParsedManifest (vient de l'analyzer-service)
+related_history    : PastIncident[] — incidents passés liés à ce type de config
+user_id            : string         — UUID de l'utilisateur (auth-service)
+manifest_name      : string         — metadata.name du manifest
+manifest_namespace : string         — metadata.namespace du manifest
+manifest_type      : string         — kind Kubernetes (Deployment, StatefulSet, ...)
 ```
 
 **Sortie :**
@@ -159,8 +167,8 @@ summary    : string     — résumé en langage naturel
 **Structure d'un `RiskItem` :**
 ```
 severity    : string  — "low" | "medium" | "high" | "critical"
-category    : string  — "missing_env" | "probe" | "image_tag" | "memory" | "security"
-description : string  — description du risque
+category    : string  — "image_tag" | "memory" | "resource" | "probe" | "security" | "sensitive_credentials"
+description : string  — description du risque (basée uniquement sur le contenu réel du manifest)
 fix         : string  — action corrective
 ```
 
@@ -168,16 +176,23 @@ fix         : string  — action corrective
 
 ```
 1. Construction du prompt (predeploy_prompt.py)
-   └── Le prompt analyse le manifest pour : image :latest, sondes manquantes,
-       limites mémoire absentes, variables d'environnement critiques manquantes
+   └── Règle critique : l'IA ne rapporte QUE ce qui est explicitement présent ou absent dans le manifest
+       (pas d'hallucination de risques inexistants)
+   └── Catégories vérifiées : image_tag (:latest), memory/resource (limits absentes),
+       probe (liveness/readiness absentes), security (privileged/runAsRoot),
+       sensitive_credentials (valeur secrète en clair dans une env var du manifest)
 
 2. Appel à Ollama
    └── Même client, même mécanisme
 
 3. Validation Pydantic (schemas/predeploy.py)
    └── Si invalide → risk_level="warning", risks=[]
+   └── fix_critical_safe_contradiction : si risk_level="safe" mais qu'un risque "critical" est présent, risk_level est forcé à "block" (incohérence du modèle, pas un jugement nuancé)
+   └── Le risk_level est sinon conservé tel quel — l'IA fait une évaluation holistique qui peut diverger de la severity individuelle
 
-4. Retour du résultat (pas de persistence pour les scans)
+4. Persistence dans postgres-ai (`_save_predeploy_analysis`)
+   └── Tous les champs mappés : pod_name, namespace, error_type, root_cause,
+       explanation, solution, confidence, risk_level, risks (trié par sévérité)
 ```
 
 ---
@@ -188,9 +203,10 @@ Utilisé par le Gateway pour le Memory Engine et pour la query GraphQL `analysis
 
 **Entrée :**
 ```
-pod_name  : string  — filtrer par pod
-namespace : string  — filtrer par namespace
-limit     : int     — nombre maximum de résultats (défaut : 10)
+pod_name      : string  — filtrer par pod / nom du manifest
+namespace     : string  — filtrer par namespace
+limit         : int     — nombre maximum de résultats (défaut : 10)
+analysis_type : string  — "" = tous | "incident" | "predeploy" (optionnel)
 ```
 
 **Sortie :**
@@ -209,7 +225,9 @@ solution         : string
 confidence       : string
 is_recurring     : bool
 recurrence_count : int
-created_at       : int  — unix timestamp
+created_at       : int     — unix timestamp
+analysis_type    : string  — "incident" | "predeploy"
+risk_level       : string  — "safe" | "warning" | "block" (predeploy uniquement)
 ```
 
 ---
@@ -282,6 +300,7 @@ POST http://ollama:11434/api/chat
   "model": "mistral",
   "format": "json",          ← force une réponse JSON valide
   "stream": false,
+  "options": {"temperature": 0.1},  ← quasi-déterministe, évite les boucles du greedy pur
   "messages": [
     {"role": "system", "content": "<SYSTEM_PROMPT>"},
     {"role": "user",   "content": "<USER_PROMPT avec les données>"}
