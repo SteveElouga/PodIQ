@@ -7,6 +7,7 @@ ALLOWED_HOSTS = ["localhost", "127.0.0.1", "gateway"]
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "corsheaders",
+    "core",
 ]
 
 MIDDLEWARE = [
@@ -23,7 +24,7 @@ DATABASES = {
     }
 }
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+REDIS_URL = ""  # StubBroker in tests — no Redis connection required
 
 AUTH_GRPC_HOST = os.environ.get("AUTH_GRPC_HOST", "auth-service")
 AUTH_GRPC_PORT = int(os.environ.get("AUTH_GRPC_PORT", "50051"))

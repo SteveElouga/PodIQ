@@ -194,6 +194,33 @@ services:
       retries: 5
       start_period: 20s
 
+  gateway-worker:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    container_name: podiq-gateway-worker
+    restart: unless-stopped
+    command: ["python", "-m", "dramatiq", "app.tasks", "--processes", "2", "--threads", "4"]
+    networks:
+      - backend
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-podiq}:${POSTGRES_PASSWORD:?}@postgres-gateway:5432/podiq_gateway
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      AUTH_GRPC_HOST: ${AUTH_GRPC_HOST:-auth-service}
+      AUTH_GRPC_PORT: ${AUTH_GRPC_PORT:-50051}
+      ANALYZER_GRPC_HOST: ${ANALYZER_GRPC_HOST:-analyzer-service}
+      ANALYZER_GRPC_PORT: ${ANALYZER_GRPC_PORT:-50052}
+      AI_GRPC_HOST: ${AI_GRPC_HOST:-ai-service}
+      AI_GRPC_PORT: ${AI_GRPC_PORT:-50053}
+      PODIQ_SERVICE_NAME: gateway-worker
+    depends_on:
+      postgres-gateway:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   auth-service:
     build:
       context: .

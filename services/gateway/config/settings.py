@@ -10,6 +10,7 @@ ALLOWED_HOSTS = os.environ.get(
 INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "corsheaders",
+    "core",
 ]
 
 MIDDLEWARE = [
