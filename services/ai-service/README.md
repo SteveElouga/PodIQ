@@ -167,8 +167,8 @@ summary    : string     — résumé en langage naturel
 **Structure d'un `RiskItem` :**
 ```
 severity    : string  — "low" | "medium" | "high" | "critical"
-category    : string  — "missing_env" | "probe" | "image_tag" | "memory" | "security"
-description : string  — description du risque
+category    : string  — "image_tag" | "memory" | "resource" | "probe" | "security" | "sensitive_credentials"
+description : string  — description du risque (basée uniquement sur le contenu réel du manifest)
 fix         : string  — action corrective
 ```
 
@@ -176,8 +176,11 @@ fix         : string  — action corrective
 
 ```
 1. Construction du prompt (predeploy_prompt.py)
-   └── Le prompt analyse le manifest pour : image :latest, sondes manquantes,
-       limites mémoire absentes, variables d'environnement critiques manquantes
+   └── Règle critique : l'IA ne rapporte QUE ce qui est explicitement présent ou absent dans le manifest
+       (pas d'hallucination de risques inexistants)
+   └── Catégories vérifiées : image_tag (:latest), memory/resource (limits absentes),
+       probe (liveness/readiness absentes), security (privileged/runAsRoot),
+       sensitive_credentials (valeur secrète en clair dans une env var du manifest)
 
 2. Appel à Ollama
    └── Même client, même mécanisme

@@ -372,7 +372,7 @@ _analyze_incident(info, pod_name, namespace)
 **Étape 2 — Worker (gateway/app/tasks.py) :**
 ```
 analyze_incident_task(job_id, user_id, pod_name, namespace)
-  1. AnalysisJob.objects.get(id=job_id) → status RUNNING + save
+  1. AnalysisJob.objects.get(id=job_id) → status RUNNING, error="" + save  (error effacé à chaque retry)
   2. invoke_grpc(ANALYZER, collect_pod(pod_name, namespace))
      → PodData{pod_name, namespace, status, logs, events}
   3. invoke_grpc(ANALYZER, scan_namespace(namespace, timestamp))
@@ -541,7 +541,7 @@ docker compose logs gateway-worker --since 5m
 
 ### Ce que c'est
 
-Avant de faire `kubectl apply`, l'utilisateur peut faire analyser son manifest YAML par PodIQ. L'IA détecte les risques de configuration : absence de resource limits, image avec tag `latest`, absence de probes de santé, variables d'environnement sensibles manquantes, contexte de sécurité insuffisant.
+Avant de faire `kubectl apply`, l'utilisateur peut faire analyser son manifest YAML par PodIQ. L'IA détecte les risques de configuration **présents dans le manifest** : image avec tag `latest`, absence de resource limits (memory/CPU), absence de probes de santé, contexte de sécurité dangereux (`privileged`, `runAsRoot`), credentials en clair dans les variables d'environnement.
 
 ### Pourquoi c'est différent d'analyzeIncident
 
@@ -654,16 +654,19 @@ spec:
 
 ### 6.2 Cas de test
 
-| Scénario | Input | riskLevel attendu |
-|---|---|---|
-| Manifest sain | YAML complet avec limits, probes, tag fixe | `safe` |
-| Tag latest | `image: app:latest` | `warning` ou `block` |
-| Pas de limits | Absence de `resources.limits` | `warning` |
-| Secret en clair | Password en value directe | `block` |
-| YAML invalide | Contenu non parseable | `GraphQLError: YAML parsing failed` |
-| yaml_content vide | `""` | `GraphQLError` |
-| manifestType absent | — (optionnel) | Analyse avec type autodétecté |
-| Sans token | — | `PermissionError` |
+| Scénario | Input | riskLevel attendu | Catégorie détectée |
+|---|---|---|---|
+| Manifest sain | YAML complet avec limits, probes, tag fixe | `safe` | — |
+| Tag latest | `image: app:latest` | `warning` ou `block` | `image_tag` |
+| Pas de memory limits | Absence de `resources.limits.memory` | `warning` | `memory` |
+| Pas de CPU limits | Absence de `resources.limits.cpu` | `warning` | `resource` |
+| Probe absente | Absence de `livenessProbe` / `readinessProbe` | `warning` | `probe` |
+| Privileged mode | `securityContext.privileged: true` | `block` | `security` |
+| Secret en clair | Env var avec valeur password en clair **dans le manifest** | `block` | `sensitive_credentials` |
+| YAML invalide | Contenu non parseable | GraphQLError: YAML parsing failed | — |
+| yaml_content vide | `""` | GraphQLError | — |
+| manifestType absent | — (optionnel) | Analyse avec type autodétecté | — |
+| Sans token | — | PermissionError | — |
 
 ---
 
