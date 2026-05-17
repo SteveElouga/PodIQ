@@ -1265,6 +1265,17 @@ Password : valeur de GRAFANA_ADMIN_PASSWORD dans .env
 | Total scans | `event="scan_manifest_complete"` | Volume total de scans |
 | Distribution | `event="scan_manifest_complete"` (timeseries par risk_level) | Évolution safe/warning/block |
 
+**Section CI/CD Pipeline Gate**
+
+| Panel | LogQL utilisé | Ce qu'on cherche |
+|---|---|---|
+| Scans CI/CD total | `event="cicd_scan_complete"` | Volume total de scans REST |
+| Déploiements bloqués | `event="cicd_scan_complete" \| exit_code="2"` | Pipelines stoppés par PodIQ (rouge si ≥ 1) |
+| Déploiements warning | `event="cicd_scan_complete" \| exit_code="1"` | Risques détectés non bloquants (jaune si ≥ 1) |
+| Déploiements safe | `event="cicd_scan_complete" \| exit_code="0"` | Pipelines validés (vert si ≥ 1) |
+| Distribution (timeseries) | `event="cicd_scan_complete"` (par risk_level) | Évolution safe/warning/block dans le temps |
+| Flux des scans (logs) | `event=~"cicd_scan_complete\|cicd_scan_start\|cicd_api_key_invalid"` | Détail des appels REST CI/CD |
+
 > **Note :** Les panels stat affichent `0` (pas "No data") quand aucun événement ne correspond dans la période sélectionnée — c'est le comportement normal.
 
 ### 12.4 Tester la pipeline de logs
