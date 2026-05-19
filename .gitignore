@@ -35,3 +35,4 @@ media/
 
 # Secrets
 .secrets.baseline
+.mcp.json

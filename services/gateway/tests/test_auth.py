@@ -76,7 +76,7 @@ class TestRequireAuth:
             from app.auth import require_auth
 
             result = require_auth(make_info("Bearer valid-token"))
-        assert result == "user-uuid-42"
+        assert result.user_id == "user-uuid-42"
 
     def test_raises_graphql_when_validate_jwt_grpc_fails(self):
         err = FakeRpcError(grpc.StatusCode.UNAVAILABLE, "")

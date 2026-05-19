@@ -10,7 +10,10 @@ from unittest.mock import patch
 import pytest
 from graphql import GraphQLError
 
+from app.auth import TokenContext
+
 MOCK_USER_ID = "cafecafe-cafe-cafe-cafe-cafecafecafe"
+MOCK_CTX = TokenContext(user_id=MOCK_USER_ID)
 MOCK_JOB_ID = "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb"
 
 
@@ -28,7 +31,8 @@ def make_info() -> Any:
 @pytest.mark.django_db
 class TestAnalysisJobQuery:
     def _run(self, job_id: str = MOCK_JOB_ID, user_id: str = MOCK_USER_ID) -> object:
-        with patch("app.graphql.queries.job.require_auth", return_value=user_id):
+        ctx = TokenContext(user_id=user_id)
+        with patch("app.graphql.queries.job.require_auth", return_value=ctx):
             from app.graphql.queries.job import _analysis_job
 
             return _analysis_job(make_info(), job_id)
@@ -99,7 +103,7 @@ class TestAnalysisJobQuery:
         from app.graphql.queries.job import _analysis_job
 
         with (
-            patch("app.graphql.queries.job.require_auth", return_value=MOCK_USER_ID),
+            patch("app.graphql.queries.job.require_auth", return_value=MOCK_CTX),
             pytest.raises(GraphQLError, match="Job not found"),
         ):
             _analysis_job(make_info(), "00000000-0000-0000-0000-000000000000")
@@ -112,7 +116,7 @@ class TestAnalysisJobQuery:
         with (
             patch(
                 "app.graphql.queries.job.require_auth",
-                return_value=other_user,
+                return_value=TokenContext(user_id=other_user),
             ),
             pytest.raises(GraphQLError, match="Job not found"),
         ):
@@ -122,7 +126,7 @@ class TestAnalysisJobQuery:
         from app.graphql.queries.job import _analysis_job
 
         with (
-            patch("app.graphql.queries.job.require_auth", return_value=MOCK_USER_ID),
+            patch("app.graphql.queries.job.require_auth", return_value=MOCK_CTX),
             pytest.raises(GraphQLError, match="Job not found"),
         ):
             _analysis_job(make_info(), "not-a-uuid")

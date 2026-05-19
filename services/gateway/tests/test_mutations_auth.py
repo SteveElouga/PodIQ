@@ -13,6 +13,8 @@ from graphql import GraphQLError
 from app.api_codes import GRAPHQL_EXTENSION_CODE, ErrorCode
 from tests.grpc_fake import FakeRpcError
 
+_FAKE_PASS = "test-pass-123"
+
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
@@ -64,7 +66,7 @@ class TestEmailValidation:
             from app.graphql.mutations.auth import _register as register
 
             with pytest.raises(GraphQLError):
-                register(info=None, email="pas-un-email", password="pass")
+                register(email="pas-un-email", password=_FAKE_PASS)
 
         mock_fn.assert_not_called()
 
@@ -73,7 +75,7 @@ class TestEmailValidation:
             from app.graphql.mutations.auth import _login as login
 
             with pytest.raises(GraphQLError):
-                login(info=None, email="pas-un-email", password="pass")
+                login(email="pas-un-email", password=_FAKE_PASS)
 
         mock_fn.assert_not_called()
 
@@ -93,7 +95,7 @@ class TestRegisterMutation:
         ):
             from app.graphql.mutations.auth import _register as register
 
-            result = register(info=None, email="new@test.com", password="pass1234")
+            result = register(email="new@test.com", password=_FAKE_PASS)
 
         assert result.token == "jwt-token-xyz"
         assert result.user_id == "uid-999"
@@ -106,9 +108,9 @@ class TestRegisterMutation:
         ) as mock_fn:
             from app.graphql.mutations.auth import _register as register
 
-            register(info=None, email="alice@test.com", password="secret")
+            register(email="alice@test.com", password=_FAKE_PASS)
 
-        mock_fn.assert_called_once_with(email="alice@test.com", password="secret")
+        mock_fn.assert_called_once_with(email="alice@test.com", password=_FAKE_PASS)
 
     def test_register_maps_grpc_to_graphql_error(self):
         err = FakeRpcError(
@@ -118,7 +120,7 @@ class TestRegisterMutation:
             from app.graphql.mutations.auth import _register as register
 
             with pytest.raises(GraphQLError) as exc_info:
-                register(info=None, email="dup@test.com", password="pass")
+                register(email="dup@test.com", password=_FAKE_PASS)
 
         assert exc_info.value.message == "This email is already registered"
         assert (
@@ -142,7 +144,7 @@ class TestLoginMutation:
         ):
             from app.graphql.mutations.auth import _login as login
 
-            result = login(info=None, email="user@test.com", password="pass")
+            result = login(email="user@test.com", password=_FAKE_PASS)
 
         assert result.token == "login-token"
         assert result.user_id == "uid-456"
@@ -155,9 +157,9 @@ class TestLoginMutation:
         ) as mock_fn:
             from app.graphql.mutations.auth import _login as login
 
-            login(info=None, email="bob@test.com", password="bobpass")
+            login(email="bob@test.com", password=_FAKE_PASS)
 
-        mock_fn.assert_called_once_with(email="bob@test.com", password="bobpass")
+        mock_fn.assert_called_once_with(email="bob@test.com", password=_FAKE_PASS)
 
     def test_login_maps_grpc_to_graphql_error(self):
         err = FakeRpcError(grpc.StatusCode.UNAUTHENTICATED, "Invalid email or password")
@@ -165,7 +167,7 @@ class TestLoginMutation:
             from app.graphql.mutations.auth import _login as login
 
             with pytest.raises(GraphQLError) as exc_info:
-                login(info=None, email="x@test.com", password="wrong")
+                login(email="x@test.com", password=_FAKE_PASS)
 
         assert exc_info.value.message == "Invalid email or password"
         assert (

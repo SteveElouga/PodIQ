@@ -1,8 +1,9 @@
+import asyncio
+from collections.abc import AsyncGenerator
+
 import strawberry
 import structlog
 from asgiref.sync import sync_to_async
-from django.core.exceptions import ValidationError
-from graphql import GraphQLError
 from strawberry.types import Info
 
 from app.auth import require_auth
@@ -11,18 +12,11 @@ from core.models import AnalysisJob
 
 logger = structlog.get_logger()
 
+_POLL_INTERVAL = 3  # seconds between DB polls
+_TERMINAL = {AnalysisJob.Status.COMPLETE, AnalysisJob.Status.FAILED}
 
-def _analysis_job(info: Info, job_id: str) -> AnalysisJobType:
-    ctx = require_auth(info)
-    user_id = ctx.user_id
 
-    try:
-        job = AnalysisJob.objects.get(id=job_id, user_id=user_id)
-    except (AnalysisJob.DoesNotExist, ValueError, ValidationError):
-        raise GraphQLError("Job not found")
-
-    logger.debug("query_analysis_job", job_id=job_id, status=job.status)
-
+def _job_to_type(job: AnalysisJob) -> AnalysisJobType:
     result: AnalysisResultType | None = None
     if job.status == AnalysisJob.Status.COMPLETE and job.result:
         r = job.result
@@ -37,7 +31,6 @@ def _analysis_job(info: Info, job_id: str) -> AnalysisJobType:
             correlated_service=r.get("correlated_service"),
             correlation_explanation=r.get("correlation_explanation"),
         )
-
     return AnalysisJobType(
         job_id=strawberry.ID(str(job.id)),
         status=job.status,
@@ -47,6 +40,24 @@ def _analysis_job(info: Info, job_id: str) -> AnalysisJobType:
     )
 
 
-@strawberry.field
-async def analysis_job(info: Info, job_id: str) -> AnalysisJobType:
-    return await sync_to_async(_analysis_job)(info, job_id)
+@strawberry.subscription
+async def job_status(info: Info, job_id: str) -> AsyncGenerator[AnalysisJobType, None]:
+    """Stream AnalysisJob status updates until the job reaches a terminal state."""
+    ctx = require_auth(info)
+
+    get_job = sync_to_async(
+        lambda: AnalysisJob.objects.filter(id=job_id, user_id=ctx.user_id).first()
+    )
+
+    job = await get_job()
+    if job is None:
+        raise ValueError("Job not found or access denied")
+
+    logger.info("subscription_job_watching", job_id=job_id, user_id=ctx.user_id)
+
+    while True:
+        job = await sync_to_async(lambda: AnalysisJob.objects.get(id=job_id))()
+        yield _job_to_type(job)
+        if job.status in _TERMINAL:
+            return
+        await asyncio.sleep(_POLL_INTERVAL)

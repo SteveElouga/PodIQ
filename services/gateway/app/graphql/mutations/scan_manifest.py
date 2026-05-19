@@ -3,6 +3,7 @@ from functools import partial
 import grpc
 import strawberry
 import structlog
+from asgiref.sync import sync_to_async
 from strawberry.types import Info
 
 from app.auth import require_auth
@@ -40,7 +41,8 @@ def _fetch_history(manifest_name: str, namespace: str) -> list[ai_pb2.PastIncide
 def _scan_manifest(
     info: Info, yaml_content: str, manifest_type: str = ""
 ) -> ManifestScanResultType:
-    user_id = require_auth(info)
+    ctx = require_auth(info)
+    user_id = ctx.user_id
     logger.info("mutation_scan_manifest", manifest_type=manifest_type, user_id=user_id)
 
     parsed = invoke_grpc(
@@ -89,7 +91,7 @@ def _scan_manifest(
 
 
 @strawberry.mutation
-def scan_manifest(
+async def scan_manifest(
     info: Info, yaml_content: str, manifest_type: str = ""
 ) -> ManifestScanResultType:
-    return _scan_manifest(info, yaml_content, manifest_type)
+    return await sync_to_async(_scan_manifest)(info, yaml_content, manifest_type)

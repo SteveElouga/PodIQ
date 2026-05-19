@@ -45,7 +45,24 @@ AI_GRPC_PORT = int(os.environ.get("AI_GRPC_PORT", "50053"))
 CORRELATION_WINDOW_MINUTES = int(os.environ.get("CORRELATION_WINDOW_MINUTES", "15"))
 CORRELATION_WINDOW_SECONDS = CORRELATION_WINDOW_MINUTES * 60
 
-CORS_ALLOW_ALL_ORIGINS = DEBUG
+# JWT secrets for workspace-scoped tokens (signed by gateway, not auth-service)
+GATEWAY_JWT_SECRET = os.environ.get("GATEWAY_JWT_SECRET", "")
+GATEWAY_JWT_ACCESS_EXPIRY_MINUTES = int(
+    os.environ.get("GATEWAY_JWT_ACCESS_EXPIRY_MINUTES", "60")
+)
+GATEWAY_REFRESH_SECRET = os.environ.get("GATEWAY_REFRESH_SECRET", "")
+GATEWAY_REFRESH_EXPIRY_DAYS = int(os.environ.get("GATEWAY_REFRESH_EXPIRY_DAYS", "30"))
+
+# CORS — credentials required for httpOnly cookie support
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "CORS_ALLOWED_ORIGINS", "http://localhost:4200,http://localhost:8080"
+    ).split(",")
+    if o.strip()
+]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 USE_TZ = True

@@ -5,12 +5,17 @@ Broker selection:
   - Tests: StubBroker (REDIS_URL="" in settings_pytest.py)
 """
 
+import datetime
 import time
 from functools import partial
+from typing import TYPE_CHECKING
 
 import dramatiq
 import structlog
 from django.conf import settings
+
+if TYPE_CHECKING:
+    from core.models import NotificationChannel, QuietHours
 
 logger = structlog.get_logger()
 
@@ -116,9 +121,176 @@ def analyze_incident_task(
             is_recurring=result.is_recurring,
         )
 
+        # Trigger notifications if workspace is known
+        if job.workspace_id:
+            event = "crashloop" if "crash" in result.error_type.lower() else "fix_found"
+            send_notifications_task.send(
+                str(job.workspace_id),
+                event,
+                {
+                    "job_id": job_id,
+                    "pod_name": pod_name,
+                    "namespace": namespace,
+                    "error_type": result.error_type,
+                    "solution": result.solution,
+                },
+            )
+
     except Exception as exc:
         job.status = AnalysisJob.Status.FAILED
         job.error = str(exc)
         job.save(update_fields=["status", "error", "updated_at"])
         logger.error("task_analyze_failed", job_id=job_id, error=str(exc))
         raise
+
+
+@dramatiq.actor(max_retries=1, time_limit=60_000)
+def send_notifications_task(workspace_id: str, event_type: str, context: dict) -> None:
+    """Dispatch notifications to all enabled channels for the workspace+event."""
+    from core.models import AlertRule, NotificationChannel, QuietHours
+
+    rules = list(
+        AlertRule.objects.filter(
+            workspace_id=workspace_id, event_type=event_type, enabled=True
+        )
+    )
+    if not rules:
+        return
+
+    try:
+        qh = QuietHours.objects.get(workspace_id=workspace_id, enabled=True)
+        if _is_quiet_period(qh) and event_type != "crashloop":
+            logger.info(
+                "notifications_suppressed_quiet_hours",
+                workspace_id=workspace_id,
+                event_type=event_type,
+            )
+            return
+    except QuietHours.DoesNotExist:
+        pass
+
+    channels = list(
+        NotificationChannel.objects.filter(workspace_id=workspace_id, enabled=True)
+    )
+    for channel in channels:
+        try:
+            _dispatch_channel(channel, event_type, context)
+        except Exception as exc:
+            logger.error(
+                "notification_dispatch_failed",
+                channel_id=str(channel.id),
+                channel_type=channel.type,
+                error=str(exc),
+            )
+
+    logger.info(
+        "notifications_sent",
+        workspace_id=workspace_id,
+        event_type=event_type,
+        channels_count=len(channels),
+    )
+
+
+def _is_quiet_period(qh: "QuietHours") -> bool:
+    import zoneinfo
+
+    try:
+        tz: datetime.tzinfo = zoneinfo.ZoneInfo(qh.timezone)
+    except Exception:
+        tz = datetime.UTC
+
+    now = datetime.datetime.now(tz)
+    if qh.weekdays_only and now.weekday() >= 5:
+        return False
+
+    current_time = now.time().replace(tzinfo=None)
+    start = qh.start_time
+    end = qh.end_time
+
+    if start <= end:
+        return start <= current_time <= end
+    # overnight range (e.g. 22:00 – 06:00)
+    return current_time >= start or current_time <= end
+
+
+def _dispatch_channel(
+    channel: "NotificationChannel", event_type: str, context: dict
+) -> None:
+    import httpx
+
+    from core.models import NotificationChannel as NC
+
+    cfg = channel.config
+    message = (
+        f"[PodIQ] {event_type.upper()} — "
+        f"{context.get('pod_name', '?')} in {context.get('namespace', '?')}\n"
+        f"Error: {context.get('error_type', '')}\n"
+        f"Fix: {context.get('solution', '')}"
+    )
+
+    if channel.type in (
+        NC.ChannelType.SLACK,
+        NC.ChannelType.DISCORD,
+        NC.ChannelType.TEAMS,
+    ):
+        webhook_url = cfg.get("webhook_url", "")
+        if not webhook_url:
+            return
+        httpx.post(webhook_url, json={"text": message}, timeout=10)
+
+    elif channel.type == NC.ChannelType.WEBHOOK:
+        url = cfg.get("url", "")
+        if not url:
+            return
+        httpx.post(url, json={"event": event_type, "context": context}, timeout=10)
+
+    elif channel.type == NC.ChannelType.PAGERDUTY:
+        routing_key = cfg.get("routing_key", "")
+        if not routing_key:
+            return
+        httpx.post(
+            "https://events.pagerduty.com/v2/enqueue",
+            json={
+                "routing_key": routing_key,
+                "event_action": "trigger",
+                "payload": {
+                    "summary": message,
+                    "severity": "critical" if event_type == "crashloop" else "warning",
+                    "source": "podiq",
+                },
+            },
+            timeout=10,
+        )
+
+    elif channel.type == NC.ChannelType.EMAIL:
+        address = cfg.get("address", "")
+        if not address:
+            return
+        _send_email(address, f"[PodIQ] {event_type}", message)
+
+
+def _send_email(to: str, subject: str, body: str) -> None:
+    import smtplib
+    from email.mime.text import MIMEText
+
+    from django.conf import settings
+
+    smtp_host = getattr(settings, "SMTP_HOST", "")
+    smtp_port = int(getattr(settings, "SMTP_PORT", 587))
+    smtp_user = getattr(settings, "SMTP_USER", "")
+    smtp_password = getattr(settings, "SMTP_PASSWORD", "")
+
+    if not smtp_host:
+        logger.warning("smtp_not_configured", to=to)
+        return
+
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = smtp_user
+    msg["To"] = to
+
+    with smtplib.SMTP(smtp_host, smtp_port) as server:
+        server.starttls()
+        if smtp_user:
+            server.login(smtp_user, smtp_password)
+        server.send_message(msg)

@@ -60,11 +60,11 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
             context.set_details(str(exc))
             return ai_pb2.AnalysisResult()
 
-        _save_analysis(request, result)
         _upsert_pattern(request, result)
         recurrence_count = _get_recurrence_count(
             request.pod_name, request.namespace, result.error_type
         )
+        _save_analysis(request, result, recurrence_count)
 
         return ai_pb2.AnalysisResult(
             error_type=result.error_type,
@@ -287,7 +287,7 @@ def _save_predeploy_analysis(
 
 
 def _save_analysis(
-    request: ai_pb2.IncidentRequest, result: AnalysisResponse
+    request: ai_pb2.IncidentRequest, result: AnalysisResponse, recurrence_count: int = 0
 ) -> Analysis:
     risks = [
         {
@@ -318,6 +318,7 @@ def _save_analysis(
         solution=result.solution,
         confidence=result.confidence,
         is_recurring=result.is_recurring,
+        recurrence_count=recurrence_count,
         correlated_service=result.correlated_service or "",
         risks=risks,
     )

@@ -10,7 +10,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.auth import TokenContext
+
 MOCK_USER_ID = "user-uuid-test"
+MOCK_CTX = TokenContext(user_id=MOCK_USER_ID)
 MOCK_JOB_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 
@@ -45,8 +48,9 @@ def make_job(
 class TestAnalyzeIncidentMutation:
     def _run(self, job: MagicMock | None = None, user_id: str = MOCK_USER_ID) -> dict:
         job = job or make_job()
+        ctx = TokenContext(user_id=user_id)
         with (
-            patch("app.graphql.mutations.analyze.require_auth", return_value=user_id),
+            patch("app.graphql.mutations.analyze.require_auth", return_value=ctx),
             patch(
                 "app.graphql.mutations.analyze.AnalysisJob.objects.create",
                 return_value=job,
@@ -89,9 +93,7 @@ class TestAnalyzeIncidentMutation:
 
     def test_job_created_with_user_pod_namespace(self):
         with (
-            patch(
-                "app.graphql.mutations.analyze.require_auth", return_value=MOCK_USER_ID
-            ),
+            patch("app.graphql.mutations.analyze.require_auth", return_value=MOCK_CTX),
             patch(
                 "app.graphql.mutations.analyze.AnalysisJob.objects.create",
                 return_value=make_job(),
@@ -104,6 +106,7 @@ class TestAnalyzeIncidentMutation:
 
         mock_create.assert_called_once_with(
             user_id=MOCK_USER_ID,
+            workspace_id=None,
             pod_name="my-pod",
             namespace="staging",
         )
