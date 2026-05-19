@@ -19,6 +19,17 @@ common:
     kvstore:
       store: inmemory
 
+ingester:
+  lifecycler:
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+    final_sleep: 0s
+  chunk_idle_period: 1m
+  chunk_retain_period: 30s
+  max_chunk_age: 2h
+
 query_scheduler:
   max_outstanding_requests_per_tenant: 2048
 

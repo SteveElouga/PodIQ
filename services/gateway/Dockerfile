@@ -22,4 +22,4 @@ COPY services/gateway/ .
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "python3 manage.py migrate --noinput && python3 -m gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 180"]
+CMD ["sh", "-c", "python3 manage.py migrate --noinput && uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers 2"]

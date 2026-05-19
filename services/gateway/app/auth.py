@@ -1,5 +1,9 @@
+from dataclasses import dataclass
+
 import grpc
+import jwt as pyjwt
 import structlog
+from django.conf import settings
 from strawberry.types import Info
 
 from app.grpc_clients import auth_client
@@ -8,15 +12,56 @@ from app.grpc_errors import GrpcService, raise_graphql_from_grpc
 logger = structlog.get_logger()
 
 
-def require_auth(info: Info) -> str:
-    """Validate the JWT from the Authorization header via auth-service (ValidateJWT).
+@dataclass
+class TokenContext:
+    user_id: str
+    email: str = ""
+    workspace_id: str | None = None
+    role: str | None = None
 
-    Returns user_id when valid. Raises PermissionError if missing, malformed, or invalid JWT payload.
-    Raises GraphQLError if the auth-service gRPC call fails (transport / service error).
+
+def _header_from_dict_ctx(ctx: dict) -> str:
+    # WebSocket: token sent via connection_init payload (browsers can't set WS headers)
+    params = ctx.get("connection_params") or {}
+    if isinstance(params, dict):
+        val = params.get("Authorization") or params.get("authorization") or ""
+        if val:
+            return val
+    # HTTP: token in request headers
+    req = ctx.get("request")
+    if req is not None and hasattr(req, "headers"):
+        return (
+            req.headers.get("Authorization") or req.headers.get("authorization") or ""
+        )
+    return ""
+
+
+def _extract_auth_header(info: Info) -> str:
+    """Extract the Authorization header from any Strawberry context layout."""
+    if not (info and info.context):
+        return ""
+    ctx = info.context
+    if isinstance(ctx, dict):
+        return _header_from_dict_ctx(ctx)
+    if hasattr(ctx, "request") and hasattr(ctx.request, "headers"):
+        return ctx.request.headers.get("Authorization", "")
+    if hasattr(ctx, "headers"):
+        return (
+            ctx.headers.get("Authorization") or ctx.headers.get("authorization") or ""
+        )
+    return ""
+
+
+def require_auth(info: Info) -> TokenContext:
+    """Validate the JWT from the Authorization header.
+
+    Workspace-JWT (signed by gateway with GATEWAY_JWT_SECRET): decoded locally — fast path.
+    User-JWT (signed by auth-service): validated via gRPC — fallback path.
+
+    Returns TokenContext. Raises PermissionError if missing/invalid.
+    Raises GraphQLError if gRPC transport fails.
     """
-    header: str = ""
-    if info and info.context and hasattr(info.context, "request"):
-        header = info.context.request.headers.get("Authorization", "")
+    header = _extract_auth_header(info)
 
     if not header.startswith("Bearer "):
         raise PermissionError(
@@ -27,6 +72,23 @@ def require_auth(info: Info) -> str:
     if not token:
         raise PermissionError("Empty token")
 
+    # Fast path: workspace-JWT signed by gateway (GATEWAY_JWT_SECRET)
+    gateway_secret = getattr(settings, "GATEWAY_JWT_SECRET", "")
+    if gateway_secret:
+        try:
+            payload = pyjwt.decode(token, gateway_secret, algorithms=["HS256"])
+            if "workspace_id" in payload:
+                logger.debug("workspace_jwt_valid", user_id=payload.get("user_id"))
+                return TokenContext(
+                    user_id=payload["user_id"],
+                    email=payload.get("email", ""),
+                    workspace_id=payload["workspace_id"],
+                    role=payload.get("role"),
+                )
+        except pyjwt.PyJWTError:
+            pass  # not a gateway-signed workspace token — fall through to gRPC
+
+    # Fallback: user-JWT validated via auth-service gRPC
     try:
         response = auth_client.validate_jwt(token)
     except grpc.RpcError as exc:
@@ -37,4 +99,4 @@ def require_auth(info: Info) -> str:
         raise PermissionError(response.error or "Invalid or expired token")
 
     logger.debug("jwt_valid", user_id=response.user_id)
-    return response.user_id
+    return TokenContext(user_id=response.user_id, email=getattr(response, "email", ""))

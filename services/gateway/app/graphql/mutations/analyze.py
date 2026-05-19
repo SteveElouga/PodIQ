@@ -1,5 +1,6 @@
 import strawberry
 import structlog
+from asgiref.sync import sync_to_async
 from strawberry.types import Info
 
 from app.auth import require_auth
@@ -11,13 +12,15 @@ logger = structlog.get_logger()
 
 
 def _analyze_incident(info: Info, pod_name: str, namespace: str) -> AnalysisJobType:
-    user_id = require_auth(info)
+    ctx = require_auth(info)
+    user_id = ctx.user_id
     logger.info(
         "mutation_analyze_incident", pod=pod_name, namespace=namespace, user_id=user_id
     )
 
     job = AnalysisJob.objects.create(
         user_id=user_id,
+        workspace_id=ctx.workspace_id,
         pod_name=pod_name,
         namespace=namespace,
     )
@@ -36,5 +39,7 @@ def _analyze_incident(info: Info, pod_name: str, namespace: str) -> AnalysisJobT
 
 
 @strawberry.mutation
-def analyze_incident(info: Info, pod_name: str, namespace: str) -> AnalysisJobType:
-    return _analyze_incident(info, pod_name, namespace)
+async def analyze_incident(
+    info: Info, pod_name: str, namespace: str
+) -> AnalysisJobType:
+    return await sync_to_async(_analyze_incident)(info, pod_name, namespace)

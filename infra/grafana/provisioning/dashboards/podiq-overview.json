@@ -892,6 +892,278 @@
       "type": "row"
     },
     {
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 35
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "pluginVersion": "11.3.1",
+      "id": 106,
+      "title": "API Keys créées",
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "count_over_time({namespace=\"podiq\"} | json | event=\"api_key_created\" [$__range])",
+          "instant": true,
+          "legendFormat": "",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 35
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "pluginVersion": "11.3.1",
+      "id": 107,
+      "title": "API Keys révoquées",
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "count_over_time({namespace=\"podiq\"} | json | event=\"revoke_api_key\" [$__range])",
+          "instant": true,
+          "legendFormat": "",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 35
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "pluginVersion": "11.3.1",
+      "id": 108,
+      "title": "Rejets API Key (CI/CD)",
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "count_over_time({namespace=\"podiq\"} | json | event=\"cicd_api_key_invalid\" [$__range])",
+          "instant": true,
+          "legendFormat": "",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 35
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short",
+          "noValue": "0"
+        },
+        "overrides": []
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "pluginVersion": "11.3.1",
+      "id": 109,
+      "title": "Logins JWT réussis",
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "editorMode": "code",
+          "expr": "count_over_time({namespace=\"podiq\"} | json | event=\"auth_login_ok\" [$__range])",
+          "instant": true,
+          "legendFormat": "",
+          "queryType": "instant",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "datasource": {
         "type": "loki",
         "uid": "loki"
@@ -927,7 +1199,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 35
+        "y": 39
       },
       "id": 16,
       "options": {
@@ -950,7 +1222,7 @@
             "uid": "loki"
           },
           "editorMode": "code",
-          "expr": "sum by(event) (count_over_time({namespace=\"podiq\"} | json | event=~\"auth_register|auth_register_ok|auth_login|auth_login_ok|jwt_invalid\" [$__interval]))",
+          "expr": "sum by(event) (count_over_time({namespace=\"podiq\"} | json | event=~\"auth_register|auth_register_ok|auth_login|auth_login_ok|jwt_invalid|api_key_created|revoke_api_key|cicd_api_key_invalid\" [$__interval]))",
           "instant": false,
           "legendFormat": "{{event}}",
           "queryType": "range",
@@ -969,7 +1241,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 35
+        "y": 39
       },
       "id": 17,
       "options": {
@@ -1005,7 +1277,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 47
       },
       "id": 103,
       "title": "Pre-deploy Scanner",
@@ -1044,7 +1316,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 44
+        "y": 48
       },
       "id": 18,
       "options": {
@@ -1111,7 +1383,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 44
+        "y": 48
       },
       "id": 19,
       "options": {
@@ -1178,7 +1450,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 44
+        "y": 48
       },
       "id": 20,
       "options": {
@@ -1245,7 +1517,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 44
+        "y": 48
       },
       "id": 21,
       "options": {
@@ -1315,7 +1587,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 48
+        "y": 52
       },
       "id": 22,
       "options": {
@@ -1354,7 +1626,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 56
+        "y": 60
       },
       "id": 105,
       "title": "CI/CD Pipeline Gate",
@@ -1389,7 +1661,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 57
+        "y": 61
       },
       "id": 23,
       "options": {
@@ -1456,7 +1728,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 57
+        "y": 61
       },
       "id": 24,
       "options": {
@@ -1523,7 +1795,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 57
+        "y": 61
       },
       "id": 25,
       "options": {
@@ -1590,7 +1862,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 57
+        "y": 61
       },
       "id": 26,
       "options": {
@@ -1660,7 +1932,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 61
+        "y": 65
       },
       "id": 27,
       "options": {
@@ -1702,7 +1974,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 61
+        "y": 65
       },
       "id": 28,
       "options": {
@@ -1738,7 +2010,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 70
+        "y": 74
       },
       "id": 104,
       "title": "Logs bruts",
@@ -1780,7 +2052,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 71
+        "y": 75
       },
       "id": 5,
       "options": {
@@ -1822,7 +2094,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 79
+        "y": 83
       },
       "id": 9,
       "options": {

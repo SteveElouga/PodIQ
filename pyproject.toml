@@ -38,3 +38,7 @@ disable_error_code = ["call-arg"]
 [[tool.mypy.overrides]]
 module = ["kubernetes", "kubernetes.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["starlette", "starlette.*"]
+ignore_missing_imports = true

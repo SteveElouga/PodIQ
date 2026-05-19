@@ -7,7 +7,10 @@ require_auth is mocked to simulate an authenticated user.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from app.auth import TokenContext
+
 MOCK_USER_ID = "user-uuid-test"
+MOCK_CTX = TokenContext(user_id=MOCK_USER_ID)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -32,6 +35,7 @@ def make_parsed_manifest(
     return SimpleNamespace(
         name=name,
         kind=kind,
+        manifest_type=kind,
         raw_config=raw_config,
         namespace="default",
         image="nginx:latest",
@@ -78,7 +82,7 @@ class TestScanManifestMutation:
         with (
             patch(
                 "app.graphql.mutations.scan_manifest.require_auth",
-                return_value=MOCK_USER_ID,
+                return_value=MOCK_CTX,
             ),
             patch(
                 "app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest",
@@ -138,7 +142,7 @@ class TestScanManifestMutation:
         with (
             patch(
                 "app.graphql.mutations.scan_manifest.require_auth",
-                return_value=MOCK_USER_ID,
+                return_value=MOCK_CTX,
             ),
             patch(
                 "app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest",
@@ -169,7 +173,7 @@ class TestScanManifestMutation:
         with (
             patch(
                 "app.graphql.mutations.scan_manifest.require_auth",
-                return_value=MOCK_USER_ID,
+                return_value=MOCK_CTX,
             ),
             patch(
                 "app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest",

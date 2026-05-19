@@ -50,6 +50,7 @@ Stocke chaque résultat d'analyse (incident, pré-déploiement, CI/CD).
 | `solution`           | text      | Action corrective IA                    | Fixes agrégés par sévérité décroissante          |
 | `confidence`         | string    | `high` / `medium` / `low`               | Dérivé du `risk_level` : `block`→`high`, `warning`→`medium`, `safe`→`low` |
 | `risk_level`         | string    | vide                                    | `safe` / `warning` / `block`                     |
+| `recurrence_count`   | int       | `incident_patterns.occurrence_count` au moment de l'analyse | `0`                                 |
 | `is_recurring`       | boolean   | `true` si pattern connu                 | `false`                                          |
 | `correlated_service` | string    | Autre service corrélé                   | vide                                             |
 | `risks`              | JSON      | `[{severity, category, description, fix}]` synthétique | `[{severity, category, description, fix}]` trié par sévérité |
@@ -132,13 +133,15 @@ correlation_explanation : string  — explication de la corrélation (vide si au
    └── coerce_to_str : si le modèle renvoie solution/root_cause/explanation/error_type sous forme de liste, les éléments sont joints en string (le prompt spécifie "single string" mais certains modèles ignorent la consigne)
    └── Si la réponse est invalide → fallback avec confidence="low" et champs par défaut
 
-4. Persistence (core/models.py)
-   └── INSERT dans `analyses` avec tous les champs du diagnostic
-   └── UPSERT dans `incident_patterns` sur (pod_name, namespace, error_type)
+4. Persistence (core/models.py) — ordre critique
+   └── UPSERT dans `incident_patterns` sur (pod_name, namespace, error_type) EN PREMIER
          → Nouveau pattern : occurrence_count=1, first_seen=now
          → Pattern connu  : occurrence_count++, last_seen=now, last_solution=mise à jour
+   └── Lecture de occurrence_count depuis incident_patterns (après upsert)
+   └── INSERT dans `analyses` avec recurrence_count = occurrence_count lu ci-dessus
+         (analyses.recurrence_count reflète toujours incident_patterns.occurrence_count)
 
-5. Retour du résultat gRPC avec is_recurring=true si occurrence_count > 1
+5. Retour du résultat gRPC avec is_recurring=true et recurrence_count=occurrence_count
 ```
 
 ---
@@ -325,7 +328,7 @@ Après la réponse HTTP, le service **extrait le premier `{` jusqu’au dernier 
 
 | Variable                  | Obligatoire | Défaut              | Description                             |
 |---------------------------|-------------|---------------------|-----------------------------------------|
-| `DATABASE_URL`            | Oui         | —                   | `postgresql://user:pass@postgres-ai/db` |
+| `DATABASE_URL`            | Oui         | —                   | `postgresql://user:pass@postgres-ai/db` |  <!-- pragma: allowlist secret -->
 | `DJANGO_SECRET_KEY`       | Oui         | —                   | Clé secrète Django                      |
 | `OLLAMA_HOST`             | Non         | `http://ollama:11434`| URL du serveur Ollama                  |
 | `OLLAMA_MODEL`            | Non         | `mistral`           | Modèle Ollama (nom tel équivalent `ollama list`) |

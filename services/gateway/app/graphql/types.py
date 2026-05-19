@@ -67,3 +67,44 @@ class AuthPayload:
     token: str
     user_id: str
     email: str
+
+
+@strawberry.type
+class WorkspaceAuthPayload:
+    token: str
+    user_id: str
+    email: str
+    workspace_id: str
+    role: str
+
+
+@strawberry.type
+class WorkspaceType:
+    id: str
+    name: str
+    slug: str
+    plan: str
+    role: str
+    region: str
+    team_size: str
+    accent_color: str
+    onboarded_at: str | None
+    created_at: str
+
+
+@strawberry.type
+class InstallTokenPayload:
+    token: str
+    workspace_id: str
+    expires_at: str
+
+
+@strawberry.type
+class ClusterType:
+    id: str
+    name: str
+    k8s_version: str
+    status: str
+    workspace_id: str
+    last_heartbeat: str | None
+    created_at: str

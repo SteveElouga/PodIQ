@@ -3,6 +3,7 @@ import re
 import grpc
 import strawberry
 import structlog
+from asgiref.sync import sync_to_async
 from graphql import GraphQLError
 from strawberry.types import Info
 
@@ -25,7 +26,7 @@ def _validate_email(email: str) -> None:
         )
 
 
-def _register(info: Info, email: str, password: str) -> AuthPayload:
+def _register(email: str, password: str) -> AuthPayload:
     _validate_email(email)
     logger.info("mutation_register", email=email)
     try:
@@ -37,7 +38,7 @@ def _register(info: Info, email: str, password: str) -> AuthPayload:
     )
 
 
-def _login(info: Info, email: str, password: str) -> AuthPayload:
+def _login(email: str, password: str) -> AuthPayload:
     _validate_email(email)
     logger.info("mutation_login", email=email)
     try:
@@ -50,7 +51,8 @@ def _login(info: Info, email: str, password: str) -> AuthPayload:
 
 
 def _create_api_key(info: Info, name: str) -> ApiKeyPayload:
-    user_id = require_auth(info)
+    ctx = require_auth(info)
+    user_id = ctx.user_id
     logger.info("mutation_create_api_key", user_id=user_id, name=name)
     if not name.strip():
         raise GraphQLError(
@@ -70,7 +72,8 @@ def _create_api_key(info: Info, name: str) -> ApiKeyPayload:
 
 
 def _revoke_api_key(info: Info, key_id: str) -> bool:
-    user_id = require_auth(info)
+    ctx = require_auth(info)
+    user_id = ctx.user_id
     logger.info("mutation_revoke_api_key", user_id=user_id, key_id=key_id)
     try:
         response = auth_client.revoke_api_key(key_id=key_id, user_id=user_id)
@@ -80,20 +83,20 @@ def _revoke_api_key(info: Info, key_id: str) -> bool:
 
 
 @strawberry.mutation
-def register(info: Info, email: str, password: str) -> AuthPayload:
-    return _register(info, email, password)
+async def register(info: Info, email: str, password: str) -> AuthPayload:
+    return await sync_to_async(_register)(email, password)
 
 
 @strawberry.mutation
-def login(info: Info, email: str, password: str) -> AuthPayload:
-    return _login(info, email, password)
+async def login(info: Info, email: str, password: str) -> AuthPayload:
+    return await sync_to_async(_login)(email, password)
 
 
 @strawberry.mutation
-def create_api_key(info: Info, name: str) -> ApiKeyPayload:
-    return _create_api_key(info, name)
+async def create_api_key(info: Info, name: str) -> ApiKeyPayload:
+    return await sync_to_async(_create_api_key)(info, name)
 
 
 @strawberry.mutation
-def revoke_api_key(info: Info, key_id: str) -> bool:
-    return _revoke_api_key(info, key_id)
+async def revoke_api_key(info: Info, key_id: str) -> bool:
+    return await sync_to_async(_revoke_api_key)(info, key_id)

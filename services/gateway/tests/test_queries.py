@@ -8,7 +8,10 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from app.auth import TokenContext
+
 MOCK_USER_ID = "user-uuid-test"
+MOCK_CTX = TokenContext(user_id=MOCK_USER_ID)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -25,6 +28,8 @@ def make_history_item(
     is_recurring=True,
     recurrence_count=3,
     created_at=None,
+    analysis_type="incident",
+    risk_level="safe",
 ):
     return SimpleNamespace(
         id=id,
@@ -37,6 +42,8 @@ def make_history_item(
         is_recurring=is_recurring,
         recurrence_count=recurrence_count,
         created_at=created_at or int(time.time()),
+        analysis_type=analysis_type,
+        risk_level=risk_level,
     )
 
 
@@ -51,9 +58,7 @@ class TestAnalysisHistoryQuery:
     def _run(self, items=None, pod_name="my-pod", namespace="default", limit=10):
         response = make_history_response(items=items or [])
         with (
-            patch(
-                "app.graphql.queries.history.require_auth", return_value=MOCK_USER_ID
-            ),
+            patch("app.graphql.queries.history.require_auth", return_value=MOCK_CTX),
             patch(
                 "app.graphql.queries.history.ai_client.get_history",
                 return_value=response,
@@ -110,9 +115,7 @@ class TestAnalysisHistoryQuery:
 
     def test_get_history_called_with_correct_args(self):
         with (
-            patch(
-                "app.graphql.queries.history.require_auth", return_value=MOCK_USER_ID
-            ),
+            patch("app.graphql.queries.history.require_auth", return_value=MOCK_CTX),
             patch(
                 "app.graphql.queries.history.ai_client.get_history",
                 return_value=make_history_response(),
@@ -127,14 +130,12 @@ class TestAnalysisHistoryQuery:
             )
 
         mock_fn.assert_called_once_with(
-            pod_name="target-pod", namespace="staging", limit=5
+            pod_name="target-pod", namespace="staging", limit=5, analysis_type=""
         )
 
     def test_default_limit_is_ten(self):
         with (
-            patch(
-                "app.graphql.queries.history.require_auth", return_value=MOCK_USER_ID
-            ),
+            patch("app.graphql.queries.history.require_auth", return_value=MOCK_CTX),
             patch(
                 "app.graphql.queries.history.ai_client.get_history",
                 return_value=make_history_response(),

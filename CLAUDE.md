@@ -107,7 +107,41 @@ Le répertoire de travail est déjà `/app`. Ces suites n’ont pas besoin de Po
 
 En cas de **`collected 0 items`** dans l’image : vérifier `ls -la /app/tests` (le dossier doit exister) puis **`docker compose build --no-cache <service>`** si le `.dockerignore` venait d’être modifié. Lancer explicitement : `python -m pytest -v tests/`. **Ne pas** coller la sortie de pytest dans le shell (les lignes `===` ne sont pas des commandes). Une erreur **`unrecognized arguments: -#`** vient en général d’un **`#` collé à `-v`** (ex. copier-coller depuis du Markdown) ou d’un tiret parasite : la commande doit être exactement `python -m pytest -v` ou `python -m pytest -v tests/`.
 
-### Start all services
+### Démarrage — Makefile (recommandé)
+
+Le `Makefile` à la racine gère les deux modes de démarrage. Ne pas appeler `docker compose` directement.
+
+```bash
+make up-mock       # mode mock — STUB_MODE=true, aucun cluster K8s requis
+make up-cluster    # mode cluster — minikube requis (voir ci-dessous)
+make down          # arrêter tous les services
+make restart-mock  # down + up-mock
+make logs          # suivre tous les logs
+make ps            # état des conteneurs
+```
+
+### Cluster Kubernetes local (minikube)
+
+Flux complet pour tester avec un vrai cluster :
+
+```bash
+make cluster-start   # démarre minikube (driver Docker, 2 CPU, 2 Go RAM)
+make cluster-config  # génère ~/.kube/config-podiq-cluster avec l'IP Docker bridge
+make up-cluster      # démarre la stack avec le kubeconfig monté dans analyzer-service
+make cluster-pods    # déploie les pods de test en échec (k8s/test-pods/)
+make cluster-status  # vérifie l'état des pods de test
+make cluster-clean   # supprime les pods de test
+```
+
+Les manifests de test dans `k8s/test-pods/` couvrent 4 scénarios :
+- `crashloop.yaml` — CrashLoopBackOff (exit 1 immédiat)
+- `oom.yaml` — OOMKilled (limite mémoire 8Mi dépassée)
+- `missing-config.yaml` — CreateContainerConfigError (ConfigMap inexistant)
+- `image-pull-error.yaml` — ImagePullBackOff (image inexistante)
+
+Le fichier `docker-compose.cluster.yml` est un overlay Compose activé uniquement par `make up-cluster`. Il monte `${KUBECONFIG_PATH}` en lecture seule dans analyzer-service (`/root/.kube/config`).
+
+### Start all services (direct)
 ```bash
 docker compose up -d --build
 ```
@@ -208,7 +242,15 @@ Each service owns its tables in its own PostgreSQL instance. No cross-service DB
 
 ### postgres-gateway (gateway)
 - Django sessions and admin tables
-- `analysis_jobs` — async incident analysis jobs (UUID PK, user_id, pod_name, namespace, status pending/running/complete/failed, result JSON, error text)
+- `analysis_jobs` — async incident analysis jobs (UUID PK, user_id, workspace_id, pod_name, namespace, status pending/running/complete/failed, result JSON, error text)
+- `workspaces` — tenant workspaces (UUID PK, owner_id, name, slug, plan, region, team_size, accent_color)
+- `workspace_members` — user roles within a workspace (workspace FK, user_id UUID, role admin/member/viewer)
+- `install_tokens` — agent install tokens (workspace FK, token wsk_xxx, expires_at, used)
+- `clusters` — registered K8s clusters (workspace FK, install_token FK, name, k8s_version, status, last_heartbeat)
+- `invitations` — workspace invitations (workspace FK, email, role, token UUID, status, expires_at)
+- `alert_rules` — per-workspace notification rules (workspace FK, event_type, enabled)
+- `notification_channels` — destinations (workspace FK, type slack/pagerduty/email/webhook/teams/discord, config JSON)
+- `quiet_hours` — notification suppression window (workspace OneToOne, start_time, end_time, timezone)
 
 ## Environment Variables
 
@@ -218,12 +260,20 @@ Copy `.env.example` to `.env` and configure:
 - `GRAFANA_ADMIN_PASSWORD` — required
 - `OLLAMA_HOST` — defaults to `http://ollama:11434`
 - `STUB_MODE` — `true` makes analyzer-service return fake K8s data (dev without a cluster); always `false` in production
+- `GATEWAY_JWT_SECRET` — signs workspace-scoped access tokens (1h) — required
+- `GATEWAY_JWT_ACCESS_EXPIRY_MINUTES` — access token lifetime, default 60
+- `GATEWAY_REFRESH_SECRET` — signs httpOnly refresh tokens (30d) — required
+- `GATEWAY_REFRESH_EXPIRY_DAYS` — refresh token lifetime, default 30
+- `CORS_ALLOWED_ORIGINS` — whitelist for frontend origins (required for httpOnly cookies)
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` — optional SMTP for invitation emails + email alert channel
 - gRPC host/port variables for internal service communication
 - Each service has its own `DATABASE_URL` pointing to its dedicated postgres container
 - `REDIS_MAXMEMORY` — limite mémoire du conteneur Redis (ex. `256mb` en dev), utilisée par `docker-compose` avec `--maxmemory-policy allkeys-lru`
 - `AI_TIMEOUT_SECONDS` — timeout HTTP ai-service → Ollama (défaut **30** dans le code ; souvent **120** en dev sur CPU)
-- Gateway : Gunicorn est lancé avec **`--timeout 180`** dans `services/gateway/Dockerfile` pour couvrir `analyzeIncident` pendant l’inférence ; sans cela, erreurs HTML/502 côté playground si le worker est tué à 30 s
-- Nginx : `proxy_read_timeout 180s` et `proxy_send_timeout 180s` configurés dans `infra/nginx/default.conf` — doit rester aligné sur le timeout Gunicorn pour éviter les 504 sur `scanManifest` (synchrone)
+- Gateway : Uvicorn (ASGI) remplace Gunicorn depuis phase-16 — requis pour les GraphQL Subscriptions (WebSocket). CMD dans `services/gateway/Dockerfile` : `uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers 2`. Utiliser **`uvicorn[standard]`** (pas `uvicorn` seul) — le `[standard]` inclut `websockets` et `httptools`, requis pour le protocole `graphql-ws`.
+- Gateway ASGI router (`config/asgi.py`) : route `/graphql` vers `strawberry.asgi.GraphQL` (HTTP + WebSocket via `graphql-ws`) ; tout le reste vers Django. `starlette>=0.27.0,<1.0` est une dépendance directe requise par `strawberry.asgi.GraphQL` — l'ajouter à `requirements.txt`.
+- `require_auth()` gère deux contextes : dict Starlette (HTTP + WebSocket) et objet Django legacy. WebSocket → token via `connection_params["Authorization"]` dans le payload `connection_init`. HTTP → `request.headers["Authorization"]`.
+- Nginx : **deux blocs `location`** dans `infra/nginx/default.conf`. `/graphql` : `proxy_read_timeout 300s`, `proxy_send_timeout 300s`, `proxy_buffering off`, headers WebSocket (`Upgrade`, `Connection` via `map $http_upgrade`). `/` : `proxy_read_timeout 180s`, `proxy_send_timeout 180s`, `Connection: ""`.
 - `OLLAMA_MODEL` — en dev, **`mistral`** recommandé pour gros prompts ; modèles type « thinking » peuvent échouer sur `/api/chat` malgré une RAM correcte
 - Logs applicatifs : **`PODIQ_SERVICE_NAME`**, **`LOG_FORMAT=json|console`** et **`LOG_LEVEL`** sont définis dans les **Dockerfiles** des services ; surcharge possible via Compose ou variables passées aux conteneurs.
 
@@ -274,5 +324,19 @@ python -m grpc_tools.protoc -I. --python_out=../shared/grpc --grpc_python_out=..
 13. ✅ CI/CD REST endpoint + API Keys (POST /api/v1/cicd/scan)
 14. ✅ Redis Queue Dramatiq (flux async complet)
 15. ✅ Dashboard Grafana podiq-overview.json
-16. 🔲 Frontend Angular
-17. 🔲 CLI
+16. ✅ Makefile multi-environnement (make up-mock / make up-cluster / make cluster-*)
+17. ✅ Phase 16 — Auth + Workspace + Agent + Invitations + Notifications (branch feature/phase-15-fixes-and-improvements)
+    - JWT en deux temps : user-JWT (auth-service gRPC) → workspace-JWT (gateway, GATEWAY_JWT_SECRET)
+    - `require_auth()` retourne `TokenContext{user_id, email, workspace_id, role}` — décode localement si workspace-JWT (fast path), sinon gRPC fallback
+    - Refresh token httpOnly cookie (GATEWAY_REFRESH_SECRET, 30j, rotation à chaque appel)
+    - Gateway ASGI : `strawberry.asgi.GraphQL` (pas `AsyncGraphQLView`) — `/graphql` supporte HTTP + WebSocket (`graphql-ws`). `uvicorn[standard]` + `starlette` requis.
+    - `config/asgi.py` : ASGI router — `/graphql` → Starlette/Strawberry, reste → Django. `info.context` est un dict `{"request": ..., "response": ...}` (pas un objet).
+    - Toutes les mutations/queries sont `async def` avec `sync_to_async(_func)(args)` — obligatoire sous ASGI pour le Django ORM synchrone.
+    - GraphQL Subscriptions WebSocket (`graphql-ws`) : `clusterConnected(workspaceId)` + `jobStatus(jobId)` — DB polling async toutes les 2-3s
+    - Agent GraphQL-first : `agentHeartbeat` + `agentReportIncident` mutations (pas de REST). `install_token.used=True` = cluster enregistré, pas token invalidé — l'agent réutilise le même token indéfiniment (seule l'expiry est vérifiée).
+    - `generateInstallToken` + `clusterStatus` pour le frontend onboarding
+    - Invitations : `inviteMember`, `revokeInvitation`, `acceptInvitation`, `generateInviteLink`, `listInvitations`. `acceptInvitation` : upgrade-only du rôle (viewer < member < admin) via `_ROLE_PRIORITY` — jamais de downgrade.
+    - Notifications : `AlertRule`, `NotificationChannel` (6 types), `QuietHours`, `send_notifications_task` Dramatiq
+    - Migrations gateway : 0002_workspace + 0003_invitations_alerts
+18. 🔲 Frontend Angular
+19. 🔲 services/agent/ (Phase 3c — agent Python service + Helm chart)

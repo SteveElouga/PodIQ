@@ -318,3 +318,160 @@ Sans **`--all-files`**, pre-commit ne traite **que les fichiers déjà stagés**
 Normal ; les environnements sont mis en cache sous `~/.cache/pre-commit`.
 
 ---
+
+## [2026-05-17] Loki — HTTP 500 `at least 1 live replicas required`
+
+**Erreur**
+```
+level=warn caller=client.go:419 component=client host=loki:3100
+msg="error sending batch, will retry" status=500
+error="at least 1 live replicas required, could only find 0
+       unhealthy instances: 127.0.0.1:9096"
+```
+
+**Service concerné** : `promtail` → `loki` (logs vides dans Grafana)
+
+**Cause**
+Loki 3.x démarre en mode single-binary mais tente d'utiliser un ring distribué pour l'ingester. La section `common.ring` ne propage pas automatiquement la configuration à tous les sous-composants internes. L'ingester n'a pas de ring explicite, se marque `unhealthy`, et Loki refuse tout batch entrant avec HTTP 500.
+
+**Solution**
+Ajouter une section `ingester` explicite dans `infra/loki/loki-config.yml` :
+
+```yaml
+ingester:
+  lifecycler:
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+    final_sleep: 0s
+  chunk_idle_period: 1m
+  chunk_retain_period: 30s
+  max_chunk_age: 2h
+```
+
+Puis redémarrer Loki :
+```bash
+docker compose restart loki
+```
+
+**Règle à retenir**
+En Loki 3.x, `common.ring` ne suffit pas pour le mode single-binary — chaque composant (ingester, distributor) doit avoir son ring configuré explicitement. Le warning `zone not set` résiduel est bénin et n'empêche pas l'ingestion.
+
+---
+
+## [2026-05-17] kubeconfig — `File does not exist: /Users/apple/.minikube/ca.crt`
+
+**Erreur**
+```json
+{
+  "error": "File does not exist: /Users/apple/.minikube/ca.crt"
+}
+```
+
+**Service concerné** : `analyzer-service` (connexion à l'API K8s depuis le conteneur)
+
+**Cause**
+`minikube kubectl -- config view --raw` génère un kubeconfig avec des **chemins absolus** vers les certificats sur la machine hôte (`certificate-authority: /Users/apple/.minikube/ca.crt`, etc.). Ces chemins n'existent pas dans le conteneur Docker.
+
+**Solution**
+Utiliser le flag `--flatten` qui embarque les contenus des fichiers `.crt`/`.key` en base64 directement dans le YAML, supprimant toute référence au système de fichiers hôte :
+
+```bash
+# Dans make cluster-config (Makefile)
+minikube kubectl -- config view --flatten --minify > $(KUBECONFIG_PATH)
+```
+
+`--minify` limite au contexte actif uniquement.
+
+**Règle à retenir**
+Toujours utiliser `--flatten` lors de l'export d'un kubeconfig destiné à être monté dans un conteneur. Sans `--flatten`, les chemins de certificats sont copiés tels quels et invalides dans tout environnement autre que la machine d'origine.
+
+---
+
+## [2026-05-17] kubeconfig — `Connection refused` sur `172.17.0.1:PORT` (minikube Docker driver)
+
+**Erreur**
+```
+HTTPSConnectionPool(host='172.17.0.1', port=59782): Max retries exceeded
+Caused by NewConnectionError: Failed to establish a new connection: [Errno 111] Connection refused
+```
+
+**Service concerné** : `analyzer-service` → API server minikube
+
+**Cause**
+Lors de la génération du kubeconfig, l'IP `172.17.0.1` (gateway du bridge Docker, obtenue via `docker network inspect bridge`) était substituée à `127.0.0.1`. Mais sur **macOS avec Docker Desktop**, les conteneurs tournent dans une VM Linux : `172.17.0.1` est la gateway interne de cette VM, pas le Mac hôte. Le port minikube (`59782`) est mappé sur `127.0.0.1` du Mac, inaccessible depuis la VM.
+
+**Solution**
+Faire parler `analyzer-service` **directement au conteneur minikube** via le réseau Docker `minikube`, en contournant le port-mapping hôte :
+
+1. Récupérer l'IP du conteneur minikube sur son réseau Docker :
+```bash
+MINIKUBE_IP=$(docker inspect minikube \
+  --format='{{.NetworkSettings.Networks.minikube.IPAddress}}')
+# ex: 192.168.49.2
+```
+
+2. Réécrire l'adresse API server dans le kubeconfig (port 8443 = port interne K8s) :
+```bash
+sed -i '' "s|https://127\.0\.0\.1:[0-9]*|https://$MINIKUBE_IP:8443|g" kubeconfig
+```
+
+3. Connecter `analyzer-service` au réseau Docker `minikube` dans `docker-compose.cluster.yml` :
+```yaml
+services:
+  analyzer-service:
+    networks:
+      - backend
+      - minikube
+
+networks:
+  minikube:
+    external: true
+    name: minikube
+```
+
+Tout cela est géré automatiquement par `make cluster-config` + `make up-cluster`.
+
+**Règle à retenir**
+Sur macOS Docker Desktop, ne jamais utiliser la gateway du bridge Docker (`172.17.0.x`) pour joindre des services hôte depuis un conteneur — utiliser `host.docker.internal` ou, mieux, mettre les conteneurs sur le même réseau Docker et communiquer directement (IP container + port interne).
+
+---
+
+## [2026-05-17] `analyses.recurrence_count` toujours à 0
+
+**Symptôme**
+Le champ `recurrenceCount` retourné par `analysisJob` est toujours `0` même après plusieurs analyses du même pod.
+
+**Service concerné** : `ai-service` (`app/grpc_server.py`)
+
+**Cause**
+Dans `AnalyzeIncident`, l'ordre des opérations était incorrect :
+```python
+# Ordre incorrect
+_save_analysis(request, result)    # INSERT analyses avec recurrence_count=0 (valeur défaut)
+_upsert_pattern(request, result)   # UPSERT incident_patterns (occurrence_count++)
+recurrence_count = _get_recurrence_count(...)  # lu trop tard, jamais passé à _save_analysis
+```
+`_save_analysis()` ne recevait pas `recurrence_count` et ne le passait pas au modèle — `analyses.recurrence_count` restait à sa valeur par défaut (0).
+
+**Solution**
+Inverser l'ordre et passer `recurrence_count` à `_save_analysis()` :
+```python
+# Ordre correct
+_upsert_pattern(request, result)              # UPSERT en premier
+recurrence_count = _get_recurrence_count(...) # lire après l'upsert
+_save_analysis(request, result, recurrence_count)  # persister la bonne valeur
+```
+
+Et mettre à jour la signature de `_save_analysis()` :
+```python
+def _save_analysis(request, result, recurrence_count: int = 0) -> Analysis:
+    ...
+    Analysis.objects.create(..., recurrence_count=recurrence_count, ...)
+```
+
+**Règle à retenir**
+`analyses.recurrence_count` est une **dénormalisation** de `incident_patterns.occurrence_count` au moment de l'analyse. Pour qu'elle soit correcte, le pattern doit être upsert **avant** que l'analyse soit sauvegardée.
+
+---
