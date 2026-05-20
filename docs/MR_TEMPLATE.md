@@ -74,7 +74,7 @@ Décrire les étapes précises pour reproduire le bug corrigé ou valider la fea
 
 **Prérequis :**
 
-- Variables d'env nécessaires : _(ex. `STUB_MODE=true`, `AI_TIMEOUT_SECONDS=120`)_
+- Variables d'env nécessaires : _(ex. `AI_TIMEOUT_SECONDS=300`, `CORRELATION_WINDOW_MINUTES=15`)_
 - Services à démarrer : _(ex. `docker compose up -d postgres-auth auth-service gateway nginx`)_
 - Données de test : _(ex. utilisateur existant, pod crashé en `OOMKilled`)_
 

@@ -205,7 +205,7 @@ success : bool
 
 | Variable              | Obligatoire | Défaut | Description                              |
 |-----------------------|-------------|--------|------------------------------------------|
-| `DATABASE_URL`        | Oui         | —      | `postgresql://user:pass@postgres-auth/db`|
+| `DATABASE_URL`        | Oui         | —      | URL PostgreSQL vers `postgres-auth:5433/podiq_auth`      |
 | `DJANGO_SECRET_KEY`   | Oui         | —      | Pepper pour le hash des mots de passe    |
 | `JWT_SECRET`          | Oui         | —      | Secret de signature des tokens JWT       |
 | `JWT_EXPIRY_MINUTES`  | Non         | `1440` | Durée de vie des JWT (24h par défaut)    |
@@ -259,7 +259,7 @@ Puis ouvre `http://localhost:8080/graphql` et exécute :
 
 ```graphql
 mutation {
-  register(email: "test@example.com", password: "monmotdepasse") {
+  register(email: "test@example.com", password: "monmotdepasse") {  # pragma: allowlist secret
     token
     userId
     email
@@ -269,7 +269,7 @@ mutation {
 
 ```graphql
 mutation {
-  login(email: "test@example.com", password: "monmotdepasse") {
+  login(email: "test@example.com", password: "monmotdepasse") {  # pragma: allowlist secret
     token
     userId
     email

@@ -54,9 +54,9 @@ Client (curl / playground / Angular)
    ▼    ▼                              ▼
 Auth  Analyzer-Service             AI-Service
 :50051 :50052                       :50053
-JWT   kubectl / STUB_MODE          Ollama :11434
-      yaml parser                  Memory Engine
-      namespace scanner            IncidentPattern
+JWT   ParseManifest only           Ollama :11434
+      YAML parser                  Memory Engine
+      (pas de kubectl)             IncidentPattern
         │                                │
   postgres-auth                   postgres-ai
   (users, api_keys)               (analyses, incident_patterns)
@@ -130,35 +130,30 @@ GATEWAY_JWT_SECRET=gateway_jwt_secret_dev        # signe les workspace-JWT (1h)
 GATEWAY_REFRESH_SECRET=gateway_refresh_secret_dev # signe les refresh tokens (30j)
 CORS_ALLOWED_ORIGINS=http://localhost:4200        # whitelist frontend (requis pour cookies httpOnly)
 OLLAMA_MODEL=mistral    # modèle recommandé
-AI_TIMEOUT_SECONDS=120  # 2 min en dev CPU
-```
-
-> **Note :** `STUB_MODE` n'est **pas** à définir dans `.env` — il est géré automatiquement par le Makefile (`make up-mock` le force à `true`, `make up-cluster` le force à `false`).
+AI_TIMEOUT_SECONDS=300  # 300s en dev CPU (inférence Mistral) ; 30s avec GPU
 
 ### 2.3 Démarrer la stack complète
 
-Deux modes disponibles via le Makefile :
-
-**Mode mock (sans cluster Kubernetes) — recommandé pour débuter :**
 ```bash
-make up-mock
+make up
 
 # Vérifier que tous les services sont healthy
 make ps
 
 # Attendre que gateway soit healthy (peut prendre 30-60s)
-make logs-gateway
+make logs
 # Signe de succès : "Application startup complete."  (Uvicorn ASGI)
 ```
 
-**Mode cluster réel (minikube requis) :**
+**Pour tester avec un vrai cluster Kubernetes (simulation agent) :**
 ```bash
-make cluster-start   # démarre minikube
-make cluster-config  # génère le kubeconfig Docker-compatible
-make up-cluster      # démarre la stack avec kubeconfig monté
+make agent-pods     # déploie les pods de test (CrashLoopBackOff, OOMKilled, etc.)
+make agent-status   # vérifie l'état des pods de test
 
-make cluster-pods    # déploie les pods de test en échec
-make cluster-status  # vérifie l'état des pods
+# Simuler un incident complet (voir section 6)
+./scripts/agent_simulate.sh wsk_xxx <pod_name> <namespace> <workspace-jwt>
+
+make agent-clean    # nettoyer les pods de test
 ```
 
 ### 2.4 Vérification rapide de la stack
@@ -180,7 +175,7 @@ docker compose up -d --build postgres-auth postgres-gateway auth-service gateway
 ```
 
 > Cette commande `docker compose` directe est acceptable pour la stack minimale.
-> Pour la stack complète, toujours utiliser `make up-mock` ou `make up-cluster`.
+> Pour la stack complète, toujours utiliser `make up`.
 
 ---
 
@@ -1286,23 +1281,22 @@ _analyze_incident(info, pod_name, namespace)
 
 **Étape 2 — Worker (gateway/app/tasks.py) :**
 ```
-analyze_incident_task(job_id, user_id, pod_name, namespace)
+analyze_incident_task(job_id, user_id, pod_name, namespace, logs, events,
+                      describe_output, namespace_pods)
   1. AnalysisJob.objects.get(id=job_id) → status RUNNING, error="" + save
-  2. invoke_grpc(ANALYZER, collect_pod(pod_name, namespace))
-     → PodData{pod_name, namespace, status, logs, events}
-  3. invoke_grpc(ANALYZER, scan_namespace(namespace, timestamp))
-     → NamespaceSnapshot{pods: [PodSummary...]}
-  4. build_namespace_context(ns_snapshot, pod_data.pod_name)
-     → [PodContext{pod_name, in_correlation_window, seconds_before_reference}]
-  5. invoke_grpc(AI, get_history(pod_name, namespace, limit=5))
+  2. _build_namespace_context(namespace_pods, pod_name, CORRELATION_WINDOW_MINUTES)
+     → [PodContext{pod_name, status, in_correlation_window, seconds_before_reference}]
+     (namespace_pods JSON envoyé par l'agent via agentReportIncident)
+  3. invoke_grpc(AI, get_history(pod_name, namespace, limit=5))
      → HistoryResponse{items: [PastIncident...]}
-  6. Construit IncidentRequest{pod_name, namespace, status, logs, events, history, namespace_context}
-  7. invoke_grpc(AI, analyze_incident(request))
+  4. Construit IncidentRequest{pod_name, namespace, status, logs, events,
+                               history, namespace_context}
+  5. invoke_grpc(AI, analyze_incident(request))
      → AnalysisResult{error_type, root_cause, explanation, solution, confidence,
                        is_recurring, recurrence_count, correlated_service, correlation_explanation}
-  8. job.result = {dict complet} ; job.status = COMPLETE ; job.save()
+  6. job.result = {dict complet} ; job.status = COMPLETE ; job.save()
      En cas d'exception :
-  8b. job.status = FAILED ; job.error = str(exc) ; job.save() ; raise
+  6b. job.status = FAILED ; job.error = str(exc) ; job.save() ; raise
 ```
 
 **Étape 3 — Polling ou Subscription :**
@@ -1349,7 +1343,7 @@ curl -s -X POST http://localhost:8080/graphql \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $WS_TOKEN" \
   -d "{
-    \"query\": \"query Poll(\$id: ID!) { analysisJob(jobId: \$id) { jobId status result { errorType rootCause explanation solution confidence isRecurring recurrenceCount correlatedService correlationExplanation } error } }\",
+    \"query\": \"query Poll(\$id: String!) { analysisJob(jobId: \$id) { jobId status result { errorType rootCause explanation solution confidence isRecurring recurrenceCount correlatedService correlationExplanation } error } }\",
     \"variables\": {\"id\": \"$JOB_ID\"}
   }"
 ```
@@ -1681,9 +1675,19 @@ build_namespace_context(ns_snapshot, target_pod_name) → [PodContext]
 
 **Variable d'environnement :** `CORRELATION_WINDOW_MINUTES` (défaut `15`).
 
-### Test avec STUB_MODE
+### Test avec l'agent simulé
 
-En `STUB_MODE=true`, l'analyzer-service génère des données fictives avec des pods simulés dans le namespace. Après une analyse complète, vérifier si `correlatedService` est renseigné dans le résultat.
+L'agent envoie le champ `namespacePods` (JSON) dans `agentReportIncident`. Le gateway parse ce JSON via `_build_namespace_context()` et calcule la fenêtre de corrélation. Après une analyse complète, vérifier si `correlatedService` est renseigné dans le résultat.
+
+```bash
+# Pour tester la corrélation, utiliser agent_simulate.sh avec un cluster contenant
+# plusieurs pods en erreur dans la même fenêtre de temps (CORRELATION_WINDOW_MINUTES=15)
+./scripts/agent_simulate.sh wsk_xxx podiq-test-crashloop default <workspace-jwt>
+
+# Vérifier namespace_snapshots en base
+docker compose exec postgres-analyzer psql -U podiq -d podiq_analyzer -c \
+  "SELECT namespace, captured_at FROM namespace_snapshots ORDER BY captured_at DESC LIMIT 5;"
+```
 
 ---
 
@@ -1807,7 +1811,7 @@ docker compose run --rm --no-deps analyzer-service python -m pytest -v
 
 ## 19. Scénarios end-to-end complets
 
-Ces scénarios nécessitent la **stack complète** démarrée (`make up-mock`).
+Ces scénarios nécessitent la **stack complète** démarrée (`make up`).
 
 ### Préparer les variables de base
 
@@ -2147,8 +2151,8 @@ docker compose logs gateway-worker --tail 20
 ### Erreur "grpc_message: timed out"
 
 ```bash
-# Dans .env, augmenter :
-AI_TIMEOUT_SECONDS=120
+# Dans .env, augmenter (300 recommandé en dev CPU) :
+AI_TIMEOUT_SECONDS=300
 docker compose up -d ai-service
 
 # Vérifier que le modèle Ollama est disponible

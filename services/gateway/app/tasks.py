@@ -6,7 +6,6 @@ Broker selection:
 """
 
 import datetime
-import time
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -31,14 +30,88 @@ else:
     dramatiq.set_broker(_StubBroker())
 
 
+_ERROR_STATUSES = frozenset(
+    {"CrashLoopBackOff", "Error", "OOMKilled", "ImagePullBackOff", "ErrImagePull"}
+)
+
+
+def _build_namespace_context(
+    namespace_pods_json: str, target_pod: str, reference_ts: int
+) -> list:
+    """Rebuild PodContext list from the JSON snapshot sent by the agent.
+
+    Expected JSON format (array):
+      [{"name": "svc-pod", "status": "CrashLoopBackOff",
+        "has_errors": true, "last_restart_time": 1716120000}, ...]
+    """
+    import json
+
+    from django.conf import settings
+
+    from stubs.ai import ai_pb2
+
+    if not namespace_pods_json:
+        return []
+    try:
+        pods: list[dict] = json.loads(namespace_pods_json)
+    except Exception:
+        return []
+
+    window_sec = int(getattr(settings, "CORRELATION_WINDOW_SECONDS", 900))
+    scored = []
+    for p in pods:
+        pod_name = p.get("name", "")
+        if not pod_name or pod_name == target_pod:
+            continue
+
+        status = p.get("status", "")
+        has_errors: bool = p.get("has_errors", False) or status in _ERROR_STATUSES
+        last_restart = int(p.get("last_restart_time", 0))
+
+        in_window = False
+        seconds_before = 0
+        if reference_ts > 0 and last_restart > 0 and reference_ts >= last_restart:
+            delta = reference_ts - last_restart
+            if delta <= window_sec:
+                in_window = True
+                seconds_before = int(delta)
+
+        scored.append(
+            (
+                in_window,
+                has_errors,
+                pod_name,
+                ai_pb2.PodContext(
+                    pod_name=pod_name,
+                    status=status,
+                    had_issues=has_errors,
+                    issue_timestamp=last_restart,
+                    in_correlation_window=in_window,
+                    seconds_before_reference=seconds_before,
+                ),
+            )
+        )
+
+    scored.sort(key=lambda row: (-row[0], -row[1], row[2]))
+    return [row[3] for row in scored]
+
+
 @dramatiq.actor(max_retries=2, time_limit=300_000)  # 5 min hard limit
 def analyze_incident_task(
-    job_id: str, user_id: str, pod_name: str, namespace: str
+    job_id: str,
+    workspace_id: str,
+    pod_name: str,
+    namespace: str,
+    logs: str = "",
+    events: str = "",
+    describe_output: str = "",
+    namespace_pods: str = "",
 ) -> None:
-    """Run the full incident analysis pipeline and persist the result."""
-    from app.grpc_clients import ai_client, analyzer_client
+    """Run the incident analysis pipeline using data collected by the agent."""
+    import time
+
+    from app.grpc_clients import ai_client
     from app.grpc_errors import GrpcService, invoke_grpc
-    from app.namespace_correlation import build_namespace_context
     from core.models import AnalysisJob
     from stubs.ai import ai_pb2
 
@@ -50,30 +123,12 @@ def analyze_incident_task(
     logger.info("task_analyze_start", job_id=job_id, pod=pod_name, namespace=namespace)
 
     try:
-        pod_data = invoke_grpc(
-            GrpcService.ANALYZER,
-            partial(
-                analyzer_client.collect_pod, pod_name=pod_name, namespace=namespace
-            ),
-        )
-        incident_ts = int(time.time())
-        ns_snapshot = invoke_grpc(
-            GrpcService.ANALYZER,
-            partial(
-                analyzer_client.scan_namespace,
-                namespace=namespace,
-                timestamp=incident_ts,
-            ),
-        )
-
-        namespace_context = build_namespace_context(ns_snapshot, pod_data.pod_name)
-
         history_response = invoke_grpc(
             GrpcService.AI,
             partial(
                 ai_client.get_history,
-                pod_name=pod_data.pod_name,
-                namespace=pod_data.namespace,
+                pod_name=pod_name,
+                namespace=namespace,
                 limit=5,
             ),
         )
@@ -87,12 +142,23 @@ def analyze_incident_task(
             for item in history_response.items
         ]
 
+        # Merge describe output into events so the AI has full context.
+        events_full = (
+            f"{events}\n\n--- kubectl describe ---\n{describe_output}"
+            if describe_output
+            else events
+        )
+
+        namespace_context = _build_namespace_context(
+            namespace_pods, pod_name, int(time.time())
+        )
+
         request = ai_pb2.IncidentRequest(
-            pod_name=pod_data.pod_name,
-            namespace=pod_data.namespace,
-            status=pod_data.status,
-            logs=pod_data.logs,
-            events=pod_data.events,
+            pod_name=pod_name,
+            namespace=namespace,
+            status="",
+            logs=logs,
+            events=events_full,
             history=history,
             namespace_context=namespace_context,
         )
@@ -121,7 +187,6 @@ def analyze_incident_task(
             is_recurring=result.is_recurring,
         )
 
-        # Trigger notifications if workspace is known
         if job.workspace_id:
             event = "crashloop" if "crash" in result.error_type.lower() else "fix_found"
             send_notifications_task.send(
@@ -189,6 +254,19 @@ def send_notifications_task(workspace_id: str, event_type: str, context: dict) -
         event_type=event_type,
         channels_count=len(channels),
     )
+
+
+@dramatiq.actor(max_retries=2, time_limit=30_000)
+def send_invitation_email_task(to: str, invite_url: str, workspace_name: str) -> None:
+    """Send an invitation email via SMTP."""
+    subject = f"You're invited to join {workspace_name} on PodIQ"
+    body = (
+        f"You have been invited to join the workspace '{workspace_name}' on PodIQ.\n\n"
+        f"Accept your invitation here:\n{invite_url}\n\n"
+        "This link expires in 7 days."
+    )
+    _send_email(to, subject, body)
+    logger.info("invitation_email_sent", to=to, workspace=workspace_name)
 
 
 def _is_quiet_period(qh: "QuietHours") -> bool:

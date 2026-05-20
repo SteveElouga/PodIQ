@@ -25,8 +25,6 @@ django.setup()
 import grpc
 import structlog
 
-from app.collectors.namespace_collector import scan_namespace
-from app.collectors.pod_collector import collect_pod
 from app.parsers.yaml_parser import parse_manifest
 from stubs.analyzer import analyzer_pb2, analyzer_pb2_grpc
 
@@ -34,72 +32,6 @@ logger = structlog.get_logger()
 
 
 class AnalyzerServicer(analyzer_pb2_grpc.AnalyzerServiceServicer):
-
-    def CollectPod(
-        self,
-        request: analyzer_pb2.PodRequest,
-        context: grpc.ServicerContext,
-    ) -> analyzer_pb2.PodData:
-        logger.info("collect_pod", pod=request.pod_name, namespace=request.namespace)
-        try:
-            data = collect_pod(
-                pod_name=request.pod_name,
-                namespace=request.namespace,
-                log_lines=request.log_lines or 2000,
-            )
-        except Exception as exc:
-            logger.error("collect_pod_error", pod=request.pod_name, error=str(exc))
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(str(exc))
-            return analyzer_pb2.PodData()
-
-        return analyzer_pb2.PodData(
-            pod_name=data["pod_name"],
-            namespace=data["namespace"],
-            status=data["status"],
-            logs=data["logs"],
-            events=data["events"],
-            describe_output=data["describe_output"],
-        )
-
-    def ScanNamespace(
-        self,
-        request: analyzer_pb2.NamespaceRequest,
-        context: grpc.ServicerContext,
-    ) -> analyzer_pb2.NamespaceSnapshot:
-        logger.info(
-            "scan_namespace",
-            namespace=request.namespace,
-            incident_timestamp=request.timestamp,
-        )
-        try:
-            result = scan_namespace(
-                namespace=request.namespace,
-                incident_timestamp=int(request.timestamp),
-            )
-        except Exception as exc:
-            logger.error(
-                "scan_namespace_error", namespace=request.namespace, error=str(exc)
-            )
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(str(exc))
-            return analyzer_pb2.NamespaceSnapshot()
-
-        pods = [
-            analyzer_pb2.PodSummary(
-                pod_name=p["pod_name"],
-                status=p["status"],
-                has_errors=p["has_errors"],
-                last_restart_time=p["last_restart_time"],
-            )
-            for p in result["pods"]
-        ]
-
-        return analyzer_pb2.NamespaceSnapshot(
-            namespace=result["namespace"],
-            pods=pods,
-            collected_at=result["collected_at"],
-        )
 
     def ParseManifest(
         self,

@@ -103,7 +103,10 @@ class TestRegister:
     def test_register_success(self, servicer):
         c = ctx()
         resp = servicer.Register(
-            auth_pb2.RegisterRequest(email="new@test.com", password="pass1234"), c
+            auth_pb2.RegisterRequest(
+                email="new@test.com", password="pass1234"
+            ),  # pragma: allowlist secret
+            c,
         )
         assert resp.email == "new@test.com"
         assert resp.token != ""
@@ -113,23 +116,32 @@ class TestRegister:
     def test_register_creates_user_in_db(self, servicer):
         c = ctx()
         servicer.Register(
-            auth_pb2.RegisterRequest(email="dbcheck@test.com", password="pass1234"), c
+            auth_pb2.RegisterRequest(
+                email="dbcheck@test.com", password="pass1234"
+            ),  # pragma: allowlist secret
+            c,
         )
         assert User.objects.filter(email="dbcheck@test.com").exists()
 
     def test_register_password_not_stored_in_plain(self, servicer):
         c = ctx()
         servicer.Register(
-            auth_pb2.RegisterRequest(email="hash@test.com", password="myplainpassword"),
+            auth_pb2.RegisterRequest(
+                email="hash@test.com",
+                password="myplainpassword",  # pragma: allowlist secret
+            ),
             c,
         )
         user = User.objects.get(email="hash@test.com")
-        assert user.password_hash != "myplainpassword"
+        assert user.password_hash != "myplainpassword"  # pragma: allowlist secret
 
     def test_register_token_is_valid_jwt(self, servicer):
         c = ctx()
         resp = servicer.Register(
-            auth_pb2.RegisterRequest(email="jwt@test.com", password="pass"), c
+            auth_pb2.RegisterRequest(
+                email="jwt@test.com", password="pass"
+            ),  # pragma: allowlist secret
+            c,
         )
         payload = jwt.decode(resp.token, JWT_SECRET, algorithms=["HS256"])
         assert payload["email"] == "jwt@test.com"
@@ -137,13 +149,19 @@ class TestRegister:
     def test_register_duplicate_email_returns_already_exists(self, servicer, user):
         c = ctx()
         servicer.Register(
-            auth_pb2.RegisterRequest(email="existing@test.com", password="pass"), c
+            auth_pb2.RegisterRequest(
+                email="existing@test.com", password="pass"
+            ),  # pragma: allowlist secret
+            c,
         )
         c.set_code.assert_called_once_with(grpc.StatusCode.ALREADY_EXISTS)
 
     def test_register_empty_email_returns_invalid_argument(self, servicer):
         c = ctx()
-        servicer.Register(auth_pb2.RegisterRequest(email="", password="pass"), c)
+        servicer.Register(
+            auth_pb2.RegisterRequest(email="", password="pass"),
+            c,  # pragma: allowlist secret
+        )
         c.set_code.assert_called_once_with(grpc.StatusCode.INVALID_ARGUMENT)
 
     def test_register_empty_password_returns_invalid_argument(self, servicer):
@@ -161,7 +179,8 @@ class TestLogin:
         c = ctx()
         resp = servicer.Login(
             auth_pb2.LoginRequest(
-                email="existing@test.com", password="correct-password"
+                email="existing@test.com",
+                password="correct-password",  # pragma: allowlist secret
             ),
             c,
         )
@@ -173,7 +192,8 @@ class TestLogin:
         c = ctx()
         resp = servicer.Login(
             auth_pb2.LoginRequest(
-                email="existing@test.com", password="correct-password"
+                email="existing@test.com",
+                password="correct-password",  # pragma: allowlist secret
             ),
             c,
         )
@@ -183,14 +203,20 @@ class TestLogin:
     def test_login_wrong_password_returns_unauthenticated(self, servicer, user):
         c = ctx()
         servicer.Login(
-            auth_pb2.LoginRequest(email="existing@test.com", password="wrong"), c
+            auth_pb2.LoginRequest(
+                email="existing@test.com", password="wrong"
+            ),  # pragma: allowlist secret
+            c,
         )
         c.set_code.assert_called_once_with(grpc.StatusCode.UNAUTHENTICATED)
 
     def test_login_unknown_email_returns_not_found(self, servicer):
         c = ctx()
         servicer.Login(
-            auth_pb2.LoginRequest(email="ghost@test.com", password="pass"), c
+            auth_pb2.LoginRequest(
+                email="ghost@test.com", password="pass"
+            ),  # pragma: allowlist secret
+            c,
         )
         c.set_code.assert_called_once_with(grpc.StatusCode.NOT_FOUND)
 
@@ -198,7 +224,10 @@ class TestLogin:
         """Error message does not reveal whether email or password was wrong."""
         c = ctx()
         servicer.Login(
-            auth_pb2.LoginRequest(email="existing@test.com", password="wrong"), c
+            auth_pb2.LoginRequest(
+                email="existing@test.com", password="wrong"
+            ),  # pragma: allowlist secret
+            c,
         )
         call_args = c.set_details.call_args[0][0]
         assert "email" in call_args.lower() or "password" in call_args.lower()

@@ -10,33 +10,6 @@ def _channel() -> grpc.Channel:
     )
 
 
-def collect_pod(
-    pod_name: str, namespace: str, log_lines: int = 2000
-) -> analyzer_pb2.PodData:
-    with _channel() as channel:
-        stub = analyzer_pb2_grpc.AnalyzerServiceStub(channel)
-        return stub.CollectPod(
-            analyzer_pb2.PodRequest(
-                pod_name=pod_name,
-                namespace=namespace,
-                log_lines=log_lines,
-            )
-        )
-
-
-def scan_namespace(
-    namespace: str, timestamp: int = 0
-) -> analyzer_pb2.NamespaceSnapshot:
-    with _channel() as channel:
-        stub = analyzer_pb2_grpc.AnalyzerServiceStub(channel)
-        return stub.ScanNamespace(
-            analyzer_pb2.NamespaceRequest(
-                namespace=namespace,
-                timestamp=timestamp,
-            )
-        )
-
-
 def parse_manifest(
     yaml_content: str, manifest_type: str = ""
 ) -> analyzer_pb2.ParsedManifest:

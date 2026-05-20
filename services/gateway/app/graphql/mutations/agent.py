@@ -76,6 +76,10 @@ def _agent_report_incident(
     install_token: str,
     pod_name: str,
     namespace: str,
+    logs: str,
+    events: str,
+    describe_output: str,
+    namespace_pods: str,
 ) -> AnalysisJobType:
     token = _resolve_install_token(install_token)
     workspace = token.workspace
@@ -94,7 +98,14 @@ def _agent_report_incident(
         namespace=namespace,
     )
     analyze_incident_task.send(
-        str(job.id), str(workspace.owner_id), pod_name, namespace
+        str(job.id),
+        str(workspace.id),
+        pod_name,
+        namespace,
+        logs,
+        events,
+        describe_output,
+        namespace_pods,
     )
 
     logger.info(
@@ -135,7 +146,14 @@ async def agent_report_incident(
     logs: str = "",
     events: str = "",
     describe_output: str = "",
+    namespace_pods: str = "",
 ) -> AnalysisJobType:
     return await sync_to_async(_agent_report_incident)(
-        install_token, pod_name, namespace
+        install_token,
+        pod_name,
+        namespace,
+        logs,
+        events,
+        describe_output,
+        namespace_pods,
     )

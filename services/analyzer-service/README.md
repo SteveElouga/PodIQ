@@ -1,25 +1,20 @@
-# Analyzer Service — Le Technicien de Terrain
+# Analyzer Service — Le Lecteur de Plans
 
 ## Analogie
 
-Imagine un **technicien de maintenance industrielle** envoyé sur le site d'une usine en panne.
+Imagine un **expert en normes de construction** qui examine les plans d'une nouvelle machine avant son installation.
 
-- Quand une machine (un pod) tombe en panne, on l'envoie sur place pour **collecter toutes les données** : les journaux de bord (logs), les rapports d'incident (events Kubernetes), et une inspection complète de la machine (describe). Il ne répare rien — il documente. C'est le `CollectPod`.
-- En même temps, il fait le tour de **toute l'usine** pour voir quelles autres machines ont des problèmes en ce moment. Il liste leur état pour détecter si la panne est isolée ou généralisée. C'est le `ScanNamespace`.
-- Quand un ingénieur lui soumet les **plans d'une nouvelle machine** avant installation, il lit les plans, extrait les informations importantes, et les met en forme pour que l'expert puisse les analyser. C'est le `ParseManifest`.
+Quand un ingénieur lui soumet les **plans d'une nouvelle installation** (un manifeste YAML Kubernetes), il lit les plans, extrait les informations importantes, et les met en forme pour que l'expert en sécurité puisse les analyser. C'est le `ParseManifest`.
 
-Le technicien ne pose **aucun diagnostic** — c'est le rôle de l'AI Service. Son rôle est de **collecter et nettoyer** les données brutes de Kubernetes.
+Il ne collecte **plus** de données depuis les clusters — ce rôle est désormais assuré par l'**agent PodIQ** déployé directement dans le cluster du client. L'agent envoie ses collectes au Gateway via `agentReportIncident`.
 
 ---
 
 ## Responsabilité
 
-Ce service est le **seul** à interagir directement avec l'API Kubernetes. Il est responsable de :
-- Récupérer les logs, events et describe d'un pod via le SDK Kubernetes Python
-- Scanner tous les pods d'un namespace et résumer leur état
-- Parser les fichiers YAML Kubernetes et en extraire une structure exploitable
-- **Nettoyer les logs** : tronquer à 2000 lignes maximum, masquer les secrets
-- Transmettre ces données brutes au Gateway (qui les passe à l'AI Service)
+Ce service est responsable de :
+- **Parser les fichiers YAML Kubernetes** et en extraire une structure exploitable pour l'AI Service
+- Transmettre cette structure au Gateway (qui la passe à l'AI Service via `ScanManifest`)
 
 Il ne stocke **pas** les résultats d'analyse — uniquement des snapshots bruts pour traçabilité.
 
@@ -31,7 +26,7 @@ Ce service possède sa propre instance PostgreSQL : **`postgres-analyzer`** (por
 
 ### Table `logs_snapshots`
 
-Stocke les données brutes collectées à chaque incident.
+Stocke les données brutes pour traçabilité.
 
 | Colonne      | Type      | Description                                       |
 |--------------|-----------|---------------------------------------------------|
@@ -45,7 +40,7 @@ Stocke les données brutes collectées à chaque incident.
 
 ### Table `namespace_snapshots`
 
-Stocke l'état du namespace au moment de chaque incident (pour la corrélation temporelle).
+Stocke l'état du namespace au moment de chaque incident.
 
 | Colonne       | Type      | Description                                          |
 |---------------|-----------|------------------------------------------------------|
@@ -61,95 +56,6 @@ Stocke l'état du namespace au moment de chaque incident (pour la corrélation t
 Ce service implémente le contrat défini dans `proto/analyzer/analyzer.proto`.
 
 Il écoute sur le port **50052**.
-
----
-
-### `CollectPod` — Collecter les données d'un pod
-
-**Entrée :**
-```
-pod_name  : string  — nom du pod en échec
-namespace : string  — namespace Kubernetes
-```
-
-**Sortie :**
-```
-pod_name  : string  — confirmé
-namespace : string  — confirmé
-status    : string  — statut actuel du pod (ex: "CrashLoopBackOff")
-logs      : string  — dernières 2000 lignes de logs, secrets masqués
-events    : string  — événements Kubernetes formatés en texte lisible
-```
-
-**Ce qui se passe en interne :**
-
-```
-1. Chargement de la config Kubernetes
-   └── Essaie d'abord incluster (si déployé dans le cluster)
-   └── Puis kubeconfig local (~/.kube/config)
-
-2. Récupération des logs (kubernetes SDK)
-   └── client.read_namespaced_pod_log(pod_name, namespace, tail_lines=2000)
-
-3. Récupération des events
-   └── client.list_namespaced_event() → filtre sur ce pod
-
-4. Récupération du describe
-   └── client.read_namespaced_pod() → formaté manuellement
-
-5. Nettoyage (log_cleaner.py)
-   └── Tronque à 2000 lignes (garde les plus récentes)
-   └── Masque 9 patterns de secrets :
-       password=***  token=***  api_key=***  secret=***
-       Authorization: ***  Bearer ***  private_key=***  etc.
-
-6. Sauvegarde du snapshot en base (logs_snapshots)
-
-7. Retour de la structure PodData
-```
-
----
-
-### `ScanNamespace` — Scanner l'état d'un namespace
-
-**Entrée :**
-```
-namespace : string  — namespace à scanner
-timestamp : int64   — unix timestamp du moment de l'incident
-```
-
-**Sortie :**
-```
-namespace : string
-pods      : PodSummary[]  — liste de tous les pods du namespace
-```
-
-**Structure d'un `PodSummary` :**
-```
-pod_name         : string  — nom du pod
-status           : string  — statut Kubernetes
-has_errors       : bool    — true si le pod est en erreur
-last_restart_time: int64   — timestamp du dernier redémarrage (0 si aucun)
-```
-
-**Détection d'erreurs :** Un pod est marqué `has_errors=true` si son statut contient l'un de ces mots : `CrashLoopBackOff`, `OOMKilled`, `Error`, `ImagePullBackOff`, `ErrImagePull`.
-
-Le client (Gateway) envoie le **timestamp de l’incident** pour aligner les snapshots temporels : l’ai-service reçoit un `namespace_context` où chaque pod peut être situé par rapport à ce moment (voir Gateway, `CORRELATION_WINDOW_MINUTES`).
-
-**Ce qui se passe en interne :**
-
-```
-1. Liste tous les pods du namespace via Kubernetes API
-
-2. Pour chaque pod → _summarize_pod()
-   └── Lit le statut de chaque conteneur
-   └── Détecte les erreurs dans les container states
-   └── Extrait le timestamp du dernier restart
-
-3. Sauvegarde du snapshot en base (namespace_snapshots)
-
-4. Retour de la liste des PodSummary
-```
 
 ---
 
@@ -199,59 +105,30 @@ has_probes   : bool     — true si liveness ou readiness probes sont définies
 
 ---
 
-## Le Nettoyage des Logs — Détail
-
-C'est une étape critique pour la sécurité. Le service doit s'assurer que **jamais** un secret n'est transmis à l'IA.
-
-### Troncature
-
-Les 2000 dernières lignes sont conservées (les plus récentes = les plus pertinentes).
-
-**Pourquoi ici et pas dans l'AI Service ?**
-Règle architecturale : les données doivent être nettoyées **avant toute transmission** inter-service. L'AI Service reçoit des données déjà prêtes.
-
-### Masquage des secrets
-
-Les patterns suivants sont détectés et remplacés par `***` :
-
-```
-password=<valeur>       → password=***
-passwd=<valeur>         → passwd=***
-secret=<valeur>         → secret=***
-token=<valeur>          → token=***
-api_key=<valeur>        → api_key=***
-auth=<valeur>           → auth=***
-Authorization: <valeur> → Authorization: ***
-Bearer <valeur>         → Bearer ***
-private_key=<valeur>    → private_key=***
-```
-
----
-
 ## Variables d'environnement
 
-| Variable             | Obligatoire | Défaut   | Description                                                             |
-|----------------------|-------------|----------|-------------------------------------------------------------------------|
-| `DATABASE_URL`       | Oui         | —        | `postgresql://user:pass@postgres-analyzer/db`                           |
-| `DJANGO_SECRET_KEY`  | Oui         | —        | Clé secrète Django                                                      |
-| `KUBECONFIG`         | Non         | —        | Chemin vers kubeconfig (hors cluster)                                   |
-| `MAX_LOG_LINES`      | Non         | `2000`   | Nombre maximal de lignes de logs à conserver                            |
-| `GRPC_PORT`          | Non         | `50052`  | Port d'écoute gRPC                                                      |
-| `STUB_MODE`          | Non         | `false`  | Si `true`, retourne des données K8s fictives — développement sans cluster |
+| Variable             | Obligatoire | Défaut   | Description                                  |
+|----------------------|-------------|----------|----------------------------------------------|
+| `DATABASE_URL`       | Oui         | —        | URL PostgreSQL vers `postgres-analyzer:5434/podiq_analyzer`         |
+| `DJANGO_SECRET_KEY`  | Oui         | —        | Clé secrète Django                           |
+| `MAX_LOG_LINES`      | Non         | `2000`   | Nombre maximal de lignes de logs à conserver |
+| `GRPC_PORT`          | Non         | `50052`  | Port d'écoute gRPC                           |
+
+> Note : `STUB_MODE` et `KUBECONFIG` sont **supprimés** depuis phase-16. La collecte K8s est assurée par l'agent déployé dans le cluster client.
 
 ---
 
 ## Communication avec les autres services
 
 ```
-Gateway ──gRPC──▶ Analyzer Service ──API──▶ Kubernetes (kubectl)
+Gateway ──gRPC──▶ Analyzer Service
                         │
                         └──▶ postgres-analyzer
 ```
 
-Ce service est **appelé par** le Gateway.
-Ce service **appelle** l'API Kubernetes (et sa propre base de données).
+Ce service est **appelé par** le Gateway (uniquement pour `ParseManifest` — scan de manifestes YAML).
 Ce service **ne connaît pas** l'AI Service — c'est le Gateway qui orchestre.
+La collecte K8s (logs, events, describe) est désormais faite par l'**agent** dans le cluster client.
 
 ---
 
@@ -264,61 +141,32 @@ cd services/analyzer-service
 python3 -m pytest -v
 ```
 
-Les hooks **pre-commit** du dépôt incluent **mypy** sur ce service lorsque des fichiers Python sous `services/analyzer-service/` sont stagés ; configuration à la racine (`pyproject.toml`, `scripts/run_mypy_precommit.py`). Voir le README racine § « Pré-commit ».
+Les hooks **pre-commit** du dépôt incluent **mypy** sur ce service lorsque des fichiers Python sous `services/analyzer-service/` sont stagés ; configuration à la racine (`pyproject.toml`, `scripts/run_mypy_precommit.py`).
 
-### Sans cluster Kubernetes — STUB_MODE
-
-Si tu n'as pas de cluster K8s disponible, active le mode stub dans ton `.env` :
-
-```env
-STUB_MODE=true
-```
-
-En mode stub, `CollectPod` retourne un pod fictif en `CrashLoopBackOff` (erreur de connexion DB) et `ScanNamespace` retourne un namespace avec 3 pods fictifs, avec des horodatages cohérents avec le `timestamp` reçu pour tester la corrélation temporelle côté Gateway. Le reste du pipeline (AI Service → Ollama) s'exécute normalement.
-
-```bash
-docker compose up -d --build analyzer-service
-```
-
-Vérifie les logs — tu dois voir `collect_pod_stub` ou `scan_namespace_stub` à la place de `collect_pod` :
-
-```bash
-docker compose logs analyzer-service | grep "stub"
-```
-
-### Avec un vrai cluster Kubernetes
-
-Mets `STUB_MODE=false` dans `.env` et assure-toi que le kubeconfig est accessible.
-
-### 1. Démarrer les dépendances
+### Démarrer le service
 
 ```bash
 docker compose up -d postgres-analyzer analyzer-service
 docker compose logs -f analyzer-service
 ```
 
-### 2. Tester via une analyse complète
+### Tester via une analyse complète (scan de manifeste)
 
-```bash
-docker compose up -d  # toute la stack
-```
-
-Puis depuis le playground GraphQL `http://localhost:8080/graphql` :
+Depuis le playground GraphQL `http://localhost:8080/graphql` :
 
 ```graphql
 mutation {
-  analyzeIncident(podName: "mon-pod-crashé", namespace: "default") {
+  scanManifest(yamlContent: "apiVersion: apps/v1\nkind: Deployment\n...") {
     errorType
-    rootCause
-    solution
+    recommendations
+    blockDeployment
   }
 }
 ```
 
-L'analyzer-service sera automatiquement appelé en premier par le gateway.
-
-### 3. Vérifier les snapshots en base
+### Vérifier les snapshots en base
 
 ```bash
-docker compose exec postgres-analyzer psql -U podiq -d podiq_analyzer -c "SELECT pod_name, namespace, created_at FROM logs_snapshots ORDER BY created_at DESC LIMIT 5;"
+docker compose exec postgres-analyzer psql -U podiq -d podiq_analyzer -c \
+  "SELECT pod_name, namespace, created_at FROM logs_snapshots ORDER BY created_at DESC LIMIT 5;"
 ```

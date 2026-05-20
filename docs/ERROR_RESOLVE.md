@@ -193,7 +193,9 @@ Dans Docker Compose, ne jamais utiliser un bloc `upstream` Nginx avec un hostnam
 
 ## [2026-05-11] analyzeIncident échoue sans cluster Kubernetes
 
-**Erreur**
+> ⚠️ **ARCHITECTURE SUPERSEDED — Phase 16** : `STUB_MODE` et `CollectPod`/`ScanNamespace` ont été **supprimés** de l'analyzer-service. La collecte K8s est désormais assurée par l'**agent PodIQ** déployé dans le cluster client. L'agent envoie les données via `agentReportIncident` (logs, events, describe, namespace_pods). Pour tester sans vrai agent, utiliser `scripts/agent_simulate.sh`. Cette erreur ne peut plus se produire.
+
+**Erreur (historique)**
 ```
 grpc._channel._InactiveRpcError: StatusCode.INTERNAL
 Details: [Errno 111] Connection refused / No such file or directory: ~/.kube/config
@@ -201,29 +203,17 @@ Details: [Errno 111] Connection refused / No such file or directory: ~/.kube/con
 
 **Service concerné** : `analyzer-service` → propagé au `gateway`
 
-**Cause**
-La mutation `analyzeIncident` appelle `CollectPod` dans l'analyzer-service, qui tente de charger la configuration Kubernetes (`load_incluster_config()` puis `load_kube_config()`). Sans cluster Kubernetes ni fichier `~/.kube/config`, les deux tentatives échouent et le service retourne une erreur gRPC INTERNAL.
+**Cause (historique)**
+La mutation `analyzeIncident` appelait `CollectPod` dans l'analyzer-service, qui tentait de charger la configuration Kubernetes (`load_incluster_config()` puis `load_kube_config()`). Sans cluster Kubernetes ni fichier `~/.kube/config`, les deux tentatives échouaient et le service retournait une erreur gRPC INTERNAL.
 
-**Solution**
-Ajouter `STUB_MODE=true` dans `.env`. En mode stub, `collect_pod()` et `scan_namespace()` retournent des données fictives réalistes (pod en CrashLoopBackOff, namespace avec 3 pods) sans appeler Kubernetes. Le reste du pipeline (AI Service → Ollama) s'exécute normalement.
-
-```env
-# .env
-STUB_MODE=true
-```
-
+**Solution actuelle (Phase 16+)**
+L'agent PodIQ collecte les données dans le cluster et les envoie via `agentReportIncident`. Pour simuler sans vrai agent :
 ```bash
-docker compose up -d --build analyzer-service
-```
-
-Vérifier l'activation :
-```bash
-docker compose logs analyzer-service | grep "stub"
-# → collect_pod_stub ou scan_namespace_stub
+./scripts/agent_simulate.sh wsk_xxx <pod_name> <namespace> <workspace-jwt>
 ```
 
 **Règle à retenir**
-`STUB_MODE=true` est réservé au développement local sans cluster. Toujours mettre `STUB_MODE=false` (ou ne pas le définir) en environnement de staging/production avec un vrai cluster.
+Depuis Phase 16, `analyzer-service` ne se connecte plus à Kubernetes. Toute la collecte K8s est dans l'agent.
 
 ---
 
@@ -240,17 +230,17 @@ Unexpected token '<', "<html>..." is not valid JSON
 **Cause fréquente**
 Gunicorn tue le worker qui traite la requête après **30 s** par défaut, alors que `analyzeIncident` attend souvent **plus longtemps** la réponse de l’ai-service (Ollama). Le worker plante, Nginx renvoie une page d’erreur **HTML** ; le client GraphQL tente de parser ce HTML comme du JSON.
 
-**Solution**
-Le `Dockerfile` du gateway lance Gunicorn avec **`--timeout 180`**. Reconstruire l’image après mise à jour :
+**Solution actuelle (Phase 16+ — Uvicorn ASGI)**
 
-```bash
-docker compose up -d --build gateway
-```
+> ℹ️ Depuis Phase 16, le gateway utilise **Uvicorn ASGI** (plus Gunicorn). Ce problème de timeout Gunicorn ne se produit plus. Le timeout pertinent est maintenant `AI_TIMEOUT_SECONDS` (côté ai-service → Ollama), à mettre à **300** en dev CPU.
 
-Aligner si besoin `AI_TIMEOUT_SECONDS` dans `.env` (ex. **120**) et vérifier les logs Ollama / ai-service pour d’autres causes de lenteur.
+**Solution historique (pré-Phase 16)**
+Le `Dockerfile` du gateway lançait Gunicorn avec **`--timeout 180`**. Reconstruire l’image après mise à jour.
+
+Aligner si besoin `AI_TIMEOUT_SECONDS` dans `.env` (ex. **300** en dev CPU) et vérifier les logs Ollama / ai-service pour d’autres causes de lenteur.
 
 **Règle à retenir**
-Le timeout worker Gunicorn doit être **≥** la durée maximale acceptable d’une mutation longue (ici surtout l’inférence IA).
+Depuis Phase 16 : Uvicorn ASGI — il n’y a plus de timeout worker. Augmenter `AI_TIMEOUT_SECONDS=300` si Ollama met trop longtemps sur CPU.
 
 ---
 
@@ -362,6 +352,8 @@ En Loki 3.x, `common.ring` ne suffit pas pour le mode single-binary — chaque c
 
 ## [2026-05-17] kubeconfig — `File does not exist: /Users/apple/.minikube/ca.crt`
 
+> ⚠️ **ARCHITECTURE SUPERSEDED — Phase 16** : L'analyzer-service ne se connecte plus à Kubernetes. La collecte K8s est assurée par l'agent PodIQ dans le cluster client. Les erreurs kubeconfig de ce type ne peuvent plus se produire dans l'analyzer-service.
+
 **Erreur**
 ```json
 {
@@ -390,6 +382,8 @@ Toujours utiliser `--flatten` lors de l'export d'un kubeconfig destiné à être
 ---
 
 ## [2026-05-17] kubeconfig — `Connection refused` sur `172.17.0.1:PORT` (minikube Docker driver)
+
+> ⚠️ **ARCHITECTURE SUPERSEDED — Phase 16** : Même raison que l'entrée précédente. L'analyzer-service ne se connecte plus à Kubernetes.
 
 **Erreur**
 ```
@@ -473,5 +467,82 @@ def _save_analysis(request, result, recurrence_count: int = 0) -> Analysis:
 
 **Règle à retenir**
 `analyses.recurrence_count` est une **dénormalisation** de `incident_patterns.occurrence_count` au moment de l'analyse. Pour qu'elle soit correcte, le pattern doit être upsert **avant** que l'analyse soit sauvegardée.
+
+---
+
+## [2026-05-19] agent_simulate.sh — `status: unknown` lors du poll `analysisJob`
+
+**Symptôme**
+```bash
+[1] status: unknown
+[2] status: unknown
+...
+Timeout — job still running after 150s
+```
+
+**Service concerné** : `scripts/agent_simulate.sh` (poll GraphQL)
+
+**Cause**
+La query de poll dans le script utilisait `query($id: ID!)` mais le schéma Strawberry déclare `job_id: str` → type GraphQL `String!` (pas `ID!`). GraphQL rejetait silencieusement la variable avec une erreur de type :
+```
+Variable '$id' of type 'ID!' used in position expecting type 'String!'.
+```
+Le gateway retournait `{"data": {"analysisJob": null}}`. `jq` décodait `null` comme `"unknown"`.
+
+**Solution**
+Changer `ID!` en `String!` dans la query de poll :
+```bash
+# Avant (incorrect)
+'{query: "query($id:ID!){analysisJob(jobId:$id){status ...}}", variables: {id: $id}}'
+
+# Après (correct)
+'{query: "query($id:String!){analysisJob(jobId:$id){status ...}}", variables: {id: $id}}'
+```
+
+**Vérification**
+```bash
+# Tester manuellement avec String! — doit retourner status réel
+JOB_ID="<uuid>"
+curl -s -X POST http://localhost:8080/graphql \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <workspace-jwt>" \
+  -d "{\"query\":\"query(\$id:String!){analysisJob(jobId:\$id){status}}\",\"variables\":{\"id\":\"$JOB_ID\"}}"
+```
+
+**Règle à retenir**
+Strawberry GraphQL mappe `str` Python → `String!` GraphQL, **pas** `ID!`. Ne jamais utiliser `ID!` dans les queries de poll de jobs PodIQ — tous les IDs internes sont des `String!` dans le schéma Strawberry généré.
+
+---
+
+## [2026-05-19] agent_simulate.sh — `status: unknown` avec UUID comme 4e argument
+
+**Symptôme**
+```
+[1] status: unknown
+```
+
+**Service concerné** : `scripts/agent_simulate.sh` — usage incorrect
+
+**Cause**
+L'utilisateur passe le `workspace_id` (UUID format `5665e7b7-...`) comme 4e argument au lieu du **workspace-JWT** (`eyJhbGci...`). `require_auth()` ne peut pas décoder un UUID comme JWT → la query `analysisJob` échoue avec une erreur d'authentification → retourne `null` → `jq` déduit `"unknown"`.
+
+**Solution**
+Le 4e argument doit être un **workspace-JWT** commençant par `eyJ`, obtenu via :
+```graphql
+mutation {
+  selectWorkspace(workspaceId: "uuid-du-workspace") {
+    token    # ← c'est ce token à passer comme 4e argument
+  }
+}
+```
+
+Puis :
+```bash
+./scripts/agent_simulate.sh wsk_xxx pod-name default eyJhbGci...
+#                                                    ^^^^^^^^^ JWT, pas UUID
+```
+
+**Règle à retenir**
+Le 4e argument de `agent_simulate.sh` est un **JWT workspace-scoped** (commence par `eyJ`), pas un workspace UUID. Si vous n'avez que le UUID, appeler d'abord `mutation { selectWorkspace(...) { token } }`.
 
 ---

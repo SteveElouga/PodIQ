@@ -273,7 +273,7 @@ mutation {
 }
 ```
 
-`logs`, `events`, `describeOutput` sont présents dans la signature GraphQL (API contract) mais pas encore transmis au worker — la collecte reste faite par l'analyzer-service en Phase 3c.
+L'agent collecte `logs`, `events`, `describeOutput` et `namespacePods` directement dans le cluster via `kubectl`, puis les envoie dans ce payload. Le worker Dramatiq (`analyze_incident_task`) les reçoit et construit le contexte namespace (`_build_namespace_context`) pour la corrélation temporelle avant de les transmettre à l'AI Service.
 
 ---
 
@@ -414,7 +414,7 @@ curl -X POST http://localhost:8080/api/v1/cicd/scan \
 | `AUTH_GRPC_HOST/PORT` | Non | `auth-service:50051` | |
 | `SMTP_HOST/PORT/USER/PASSWORD` | Non | — | Emails d'invitation + canal `email` |
 | `CORRELATION_WINDOW_MINUTES` | Non | `15` | Fenêtre corrélation namespace |
-| `AI_TIMEOUT_SECONDS` | Non | `30` | Timeout vers Ollama (120 recommandé en dev CPU) |
+| `AI_TIMEOUT_SECONDS` | Non | `30` | Timeout vers Ollama (300 recommandé en dev CPU pour l'inférence Mistral) |
 
 ---
 
@@ -487,7 +487,7 @@ ce qui écrasait le rôle admin existant avec le rôle de l'invitation (member).
 ### 1. Démarrer
 
 ```bash
-make up-mock
+make up
 # ou
 docker compose up -d --build
 ```

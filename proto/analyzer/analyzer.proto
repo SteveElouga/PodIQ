@@ -3,46 +3,7 @@ syntax = "proto3";
 package analyzer;
 
 service AnalyzerService {
-  rpc CollectPod      (PodRequest)       returns (PodData);
-  rpc ScanNamespace   (NamespaceRequest) returns (NamespaceSnapshot);
   rpc ParseManifest   (ManifestRequest)  returns (ParsedManifest);
-}
-
-// ── CollectPod ────────────────────────────────────────────────────────────────
-
-message PodRequest {
-  string pod_name  = 1;
-  string namespace = 2;
-  int32  log_lines = 3;  // max 2000 — tronqué dans analyzer-service
-}
-
-message PodData {
-  string pod_name        = 1;
-  string namespace       = 2;
-  string status          = 3;
-  string logs            = 4;  // tronqué à 2000 lignes, secrets masqués
-  string events          = 5;
-  string describe_output = 6;
-}
-
-// ── ScanNamespace ─────────────────────────────────────────────────────────────
-
-message NamespaceRequest {
-  string namespace = 1;
-  int64  timestamp = 2;  // unix timestamp de l'incident pour la corrélation
-}
-
-message NamespaceSnapshot {
-  string            namespace    = 1;
-  repeated PodSummary pods       = 2;
-  int64             collected_at = 3;
-}
-
-message PodSummary {
-  string pod_name          = 1;
-  string status            = 2;
-  bool   has_errors        = 3;
-  int64  last_restart_time = 4;
 }
 
 // ── ParseManifest ─────────────────────────────────────────────────────────────

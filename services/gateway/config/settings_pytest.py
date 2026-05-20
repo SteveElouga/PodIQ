@@ -1,6 +1,6 @@
 import os
 
-SECRET_KEY = "pytest-gateway-secret-not-for-production"
+SECRET_KEY = "pytest-gateway-secret-not-for-production"  # pragma: allowlist secret
 DEBUG = False
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "gateway"]
 

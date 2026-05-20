@@ -143,6 +143,9 @@ services:
       - backend
     volumes:
       - ollama_data:/root/.ollama
+    environment:
+      # Garde le modèle en mémoire indéfiniment (évite le cold start de ~100s)
+      OLLAMA_KEEP_ALIVE: "-1"
     # GPU optionnel — décommenter sur une machine Linux+NVIDIA si besoin
     # deploy:
     #   resources:
@@ -253,7 +256,6 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-podiq}:${POSTGRES_PASSWORD:?}@postgres-analyzer:5432/podiq_analyzer
       GRPC_PORT: "50052"
-      STUB_MODE: ${STUB_MODE:-false}
     depends_on:
       postgres-analyzer:
         condition: service_healthy
