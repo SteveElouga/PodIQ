@@ -1,9 +1,15 @@
 # PodIQ — Spécification Fonctionnelle
 
-**Version** : 1.0
-**Date** : 2026-05-18
-**Public cible** : Équipe backend (Django / DRF)
+**Version** : 2.0
+**Date** : 2026-05-20
+**Public cible** : Équipe frontend Angular
 **Source** : `PodIQ Hi-fi.html` — 9 sections, ~30 écrans
+
+> **Note de mise à jour v2.0** — La v1.0 décrivait une API REST imaginaire. Cette version
+> reflète l'implémentation backend réelle. **Toutes les opérations passent par GraphQL**
+> (`POST /graphql`) sauf l'endpoint CI/CD (`POST /api/v1/cicd/scan`). Les fonctionnalités
+> non encore implémentées sont marquées **[NON IMPLÉMENTÉ]** — le frontend doit les stubber
+> jusqu'à leur disponibilité backend.
 
 ---
 
@@ -52,72 +58,131 @@
 
 ## Conventions transverses
 
-### Authentification
-- Toutes les routes hors `/`, `/login`, `/signup`, `/help`, `/legal/*` exigent un JWT valide dans `Authorization: Bearer <token>`.
-- Le JWT porte `workspace_id`, `user_id`, `role` (`admin` | `member` | `viewer`).
-- Refresh via `POST /api/auth/refresh` avec un cookie `httpOnly` `refresh_token`.
+### Transport — GraphQL uniquement
 
-### Format de réponse standard
-```json
-{
-  "data": { ... } | [ ... ],
-  "meta": { "page": 1, "per_page": 50, "total": 1247, "next": "..." }
-}
+Toutes les opérations passent par un seul endpoint :
+
 ```
-Erreurs :
-```json
-{
-  "error": {
-    "code": "VALIDATION_FAILED",
-    "message": "Workspace name must be lowercase.",
-    "fields": { "workspace.name": "must be lowercase" }
+POST /graphql          ← HTTP (queries + mutations)
+WS   /graphql          ← WebSocket graphql-ws (subscriptions)
+POST /api/v1/cicd/scan ← REST uniquement, auth X-Api-Key
+```
+
+Le playground interactif est disponible sur `http://localhost:8080/graphql`.
+
+### Authentification — deux étapes
+
+Le backend utilise un JWT en deux temps. Le frontend doit appliquer ce flux sans exception.
+
+**Étape 1 — User-JWT (auth-service)**
+
+```graphql
+mutation Login($email: String!, $password: String!) {
+  login(email: $email, password: $password) {
+    token      # user-JWT, signé par auth-service
+    userId
+    email
   }
 }
 ```
 
-### Codes d'erreur normalisés
-| Code HTTP | `error.code` | Sens |
-|-----------|--------------|------|
-| 400 | `VALIDATION_FAILED` | Payload invalide |
-| 401 | `UNAUTHENTICATED` | Pas de JWT ou expiré |
-| 403 | `FORBIDDEN` | Rôle insuffisant |
-| 404 | `NOT_FOUND` | Ressource absente |
-| 409 | `CONFLICT` | Ressource existe déjà (slug pris, etc.) |
-| 422 | `BUSINESS_RULE_VIOLATION` | Règle métier (RMxxx) bloquée |
-| 429 | `RATE_LIMITED` | Throttling |
-| 503 | `CLUSTER_DISCONNECTED` | Agent K8s injoignable |
+Ce token ne contient pas de `workspace_id` ni de `role`. Il sert uniquement à l'étape 2.
 
-### Pagination
-- Cursor-based par défaut sur les listes longues (incidents, events).
-- Paramètres : `?cursor=<opaque>&limit=50`.
+**Étape 2 — Workspace-JWT (gateway)**
+
+```graphql
+mutation SelectWorkspace($workspaceId: ID!) {
+  selectWorkspace(workspaceId: $workspaceId) {
+    token        # workspace-JWT, signé par gateway
+    userId
+    email
+    workspaceId
+    role         # "admin" | "member" | "viewer"
+  }
+}
+```
+
+Ce workspace-JWT est celui à stocker en mémoire et à envoyer dans `Authorization: Bearer <token>` pour toutes les requêtes authentifiées. `selectWorkspace` pose également un cookie `httpOnly refresh_token` (30 jours).
+
+**Refresh**
+
+```graphql
+mutation {
+  refreshToken {
+    token
+    userId
+    email
+    workspaceId
+    role
+  }
+}
+```
+
+Lit le cookie `refresh_token` httpOnly, retourne un nouveau workspace-JWT, et pose un nouveau cookie (rotation automatique). À appeler avant expiration du workspace-JWT (durée configurable via `GATEWAY_JWT_ACCESS_EXPIRY_MINUTES`, défaut 60 min).
+
+**WebSocket (subscriptions)**
+
+Le token doit être passé dans le payload `connection_init` :
+
+```json
+{ "Authorization": "Bearer <workspace-jwt>" }
+```
+
+**SSO (Google, GitHub, SAML) — [NON IMPLÉMENTÉ]**
 
 ### Rôles & permissions
-| Rôle | Lecture | Écriture | Admin (billing/SSO/API keys) |
-|------|---------|----------|-------------------------------|
+
+| Rôle | Lecture | Écriture | Admin (invitations, canaux, API keys) |
+|------|---------|----------|---------------------------------------|
 | `viewer` | ✅ | ❌ | ❌ |
-| `member` | ✅ | ✅ (incidents, fixes, PR) | ❌ |
+| `member` | ✅ | ✅ (analyses) | ❌ |
 | `admin` | ✅ | ✅ | ✅ |
 
-### Modèle de données (vue d'ensemble)
+Les mutations `createAlertRule`, `toggleAlertRule`, `connectChannel`, `disconnectChannel`, `setQuietHours`, `inviteMember`, `revokeInvitation`, `generateInviteLink`, `generateInstallToken`, `updateWorkspace` exigent le rôle `admin`.
+
+### Format des erreurs GraphQL
+
+Les erreurs sont retournées dans le champ `errors[]` standard GraphQL. Le champ `extensions` porte le code normalisé :
+
+```json
+{
+  "errors": [
+    {
+      "message": "Workspace name must be 2–32 characters",
+      "extensions": { "code": "VALIDATION" }
+    }
+  ]
+}
+```
+
+Codes disponibles : `VALIDATION`, `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `INTERNAL`.
+
+### Pagination
+
+Aucune pagination cursor-based n'est implémentée. Les queries retournent des listes complètes. Le paramètre `limit` est disponible sur `analysisHistory` (défaut 10).
+
+### Modèle de données (périmètre implémenté)
+
 ```
 Workspace
-  ├── Plan (free | pro | enterprise)
-  ├── Region (eu | us | ap)
   ├── Members (User × Role)
-  ├── Clusters
-  │     ├── Nodes
-  │     ├── Namespaces
-  │     ├── Services
-  │     └── Pods (events, metrics)
-  ├── Incidents
-  │     ├── RootCause
-  │     ├── MemoryMatches
-  │     └── ProposedFix → PullRequest
-  ├── MemoryPatterns
-  ├── AlertRules + Channels
-  ├── APIKeys
-  └── AuditLog
+  ├── Clusters (statut, last_heartbeat)
+  ├── InstallTokens
+  ├── Invitations (pending | accepted | revoked | expired)
+  ├── AlertRules (event_type, enabled)
+  ├── NotificationChannels (slack | pagerduty | email | webhook | teams | discord)
+  ├── QuietHours
+  └── AnalysisJobs (pending | running | complete | failed)
+        └── result: AnalysisResultType
+
+AnalysisHistory (par pod_name + namespace)
+  ├── error_type, root_cause, solution, confidence
+  ├── is_recurring, recurrence_count
+  └── correlated_service, correlation_explanation
 ```
+
+Non implémenté : Nodes, Namespaces, Services, Deploys, SLOs, métriques temps réel, billing,
+incidents lifecycle (ack/dismiss), postmortem, audit log, notifications in-app.
 
 ---
 
@@ -151,11 +216,9 @@ Workspace
 | Clic "Get started" / "Connect a cluster" | Navigue `/signup` | — |
 | Clic "Watch 90s demo" | Ouvre modal vidéo | — |
 | Clic "Book a demo" | → `/demo` ou Calendly | — |
-| Clic logo strip | Navigation vers case studies (futur) | — |
 
 ## 4. États
 - **Initial** : statique, aucun chargement.
-- **Erreur** : N/A (purement statique).
 
 ## 5. Règles métier
 - **RM001** — Si visiteur déjà authentifié (cookie `refresh_token` valide) → afficher CTA "Open dashboard" au lieu de "Sign in" / "Get started".
@@ -178,154 +241,152 @@ And il pointe vers /dashboard
 
 ## 1. Vue d'ensemble
 - **Route** : `/login`
-- **Rôle** : Authentifier un utilisateur existant via SSO ou email/password.
+- **Rôle** : Authentifier un utilisateur existant via email/password.
 - **Acteurs** : Utilisateur enregistré.
 
 ## 2. Composants et données affichées
-Layout : 2 colonnes (form gauche / value prop droite).
 
 | Composant | Type | Source | Règles |
 |-----------|------|--------|--------|
-| SSO buttons (Google, GitHub, SAML SSO) | Buttons | Front | OAuth redirect |
 | Email field | Input | Saisie | Format email valide |
-| Password field | Input password | Saisie | Min 8 chars |
-| "Remember this device" | Checkbox | Saisie | Bool |
-| "Forgot password?" link | Lien | — | → `/forgot-password` |
-| Bouton "Sign in" | Submit | — | Active si email + password renseignés |
-| Carte live "auth-api recovered" (visuel droite) | Statique | Front | Décor uniquement |
-| SAML/OIDC hint box | Statique | Front | — |
+| Password field | Input password | Saisie | Non vide |
+| Bouton "Sign in" | Submit | — | Actif si email + password renseignés |
+| SSO buttons (Google, GitHub, SAML) | Buttons | — | **[NON IMPLÉMENTÉ]** |
+| "Forgot password?" link | Lien | — | **[NON IMPLÉMENTÉ]** → `/forgot-password` |
 
 ## 3. Actions
 
 ### Sign in (email/password)
-- **Déclencheur** : submit form
-- **API** : `POST /api/auth/login`
-- **Payload** :
-```json
-{ "email": "luc@acme.io", "password": "...", "remember": true }
-```
-- **Réponse 200** :
-```json
-{
-  "data": {
-    "user": { "id": "u_...", "email": "...", "role": "admin" },
-    "workspace": { "id": "w_...", "slug": "acme-platform" },
-    "access_token": "<jwt>",
-    "expires_in": 3600
+
+**Étape 1 — obtenir le user-JWT :**
+```graphql
+mutation Login($email: String!, $password: String!) {
+  login(email: $email, password: $password) {
+    token
+    userId
+    email
   }
 }
 ```
-Set cookie `refresh_token` httpOnly.
-- **Validation** :
-  - email : format RFC 5322
-  - password : non vide
-- **Erreurs** :
-  - 401 `INVALID_CREDENTIALS`
-  - 403 `EMAIL_NOT_VERIFIED` → afficher banner
-  - 403 `SSO_REQUIRED` (workspace force SSO)
-  - 429 `RATE_LIMITED` (5 tentatives / 10 min)
 
-### SSO
-- **Google** : `GET /api/auth/oauth/google/init` → redirect 302.
-- **GitHub** : `GET /api/auth/oauth/github/init` → redirect.
-- **SAML** : `POST /api/auth/saml/init` avec domaine email → redirect IdP.
-- Callback : `/api/auth/oauth/<provider>/callback?code=...`
+**Étape 2 — sélectionner un workspace (nécessaire pour obtenir le workspace-JWT) :**
+```graphql
+mutation SelectWorkspace($workspaceId: ID!) {
+  selectWorkspace(workspaceId: $workspaceId) {
+    token
+    userId
+    email
+    workspaceId
+    role
+  }
+}
+```
+
+Si l'utilisateur n'a pas encore de workspace → rediriger vers `/onboarding/workspace`.
+Si l'utilisateur a plusieurs workspaces → afficher un picker avant l'étape 2.
+
+Pour récupérer la liste des workspaces de l'utilisateur (avec le user-JWT de l'étape 1) :
+```graphql
+query {
+  listWorkspaces {
+    id
+    name
+    slug
+    plan
+    role
+    region
+  }
+}
+```
+
+**Erreurs possibles :**
+- `UNAUTHENTICATED` — credentials invalides
+- `VALIDATION` — email mal formé
 
 ## 4. États
 - **Initial** : form vide.
 - **Loading** : spinner sur "Sign in" pendant l'appel.
 - **Erreur credentials** : message rouge sous le password.
-- **Erreur email non vérifié** : lien "Resend verification".
-- **Erreur SSO forcé** : message + bouton "Continue with SSO".
 
 ## 5. Règles métier
-- **RM010** — Après 5 échecs en 10 min → 429 + captcha optionnel.
-- **RM011** — Si workspace `force_sso = true` → bloquer email/password pour les membres internes.
-- **RM012** — `remember = true` → refresh token 30 jours, sinon 24h.
+- **RM010** — Pas de rate-limiting implémenté côté backend pour l'instant.
+- **RM011** — SSO non disponible. Email/password uniquement.
+- **RM012** — Le cookie `refresh_token` (30 jours) est posé automatiquement par `selectWorkspace`.
 
 ## 6. Critères d'acceptation
 ```gherkin
-Given un utilisateur valide
+Given un utilisateur valide avec un workspace existant
 When il soumet email + password corrects
-Then il reçoit un JWT et un cookie refresh_token
+Then il reçoit un user-JWT (étape 1)
+And il appelle selectWorkspace avec son workspaceId
+Then il reçoit un workspace-JWT + cookie refresh_token
 And il est redirigé vers /dashboard
-
-Given un workspace avec force_sso = true
-When un membre tente email/password
-Then 403 SSO_REQUIRED s'affiche
 ```
-
-[AMBIGUÏTÉ] Le design affiche un compteur stats côté droit (MTTR, Pages, Memory) — données live workspace public ou décor ? **À CONFIRMER** : si live, prévoir endpoint public `GET /api/public/stats/:workspace_slug`.
 
 ---
 
-# 03 · Signup (3 variantes)
+# 03 · Signup
 
-3 designs proposés (`SignupSplit`, `SignupCentered`, `SignupPlanFirst`). Tous partagent la même logique backend ; le choix UI est cosmétique.
+3 designs proposés (`SignupSplit`, `SignupCentered`, `SignupPlanFirst`). Tous partagent la même logique backend.
 
 ## 1. Vue d'ensemble
 - **Route** : `/signup`
-- **Rôle** : Créer un compte + workspace + sélectionner un plan.
+- **Rôle** : Créer un compte utilisateur.
 - **Acteurs** : Visiteur anonyme.
 
 ## 2. Données saisies
+
 | Champ | Type | Requis | Règles |
 |-------|------|--------|--------|
-| Email | string | ✅ | RFC 5322, domaine non blacklisté |
-| Password | string | ✅ (si pas SSO) | Min 12 chars, 1 maj, 1 min, 1 chiffre |
-| Plan | enum | ✅ | `free` \| `pro` \| `enterprise` |
-| Billing cycle | enum | ✅ si `pro` | `monthly` \| `annual` |
-| ToS accepted | bool | ✅ | Doit être `true` |
+| Email | string | ✅ | RFC 5322 |
+| Password | string | ✅ | Non vide (backend valide uniquement la présence) |
+| ToS accepted | bool | ❌ backend | À valider côté front uniquement |
+
+> **Note** : La sélection de plan au signup (plan, billing_cycle) et la vérification email
+> (`email_verified`) ne sont **pas implémentées** côté backend. Le plan peut être renseigné
+> lors de `createWorkspace`. La vérification email est absente.
 
 ## 3. Actions
 
 ### Signup email/password
-- **API** : `POST /api/auth/signup`
-- **Payload** :
-```json
-{
-  "email": "luc@acme.io",
-  "password": "...",
-  "plan": "pro",
-  "billing_cycle": "monthly",
-  "tos_accepted": true
+
+```graphql
+mutation Register($email: String!, $password: String!) {
+  register(email: $email, password: $password) {
+    token    # user-JWT
+    userId
+    email
+  }
 }
 ```
-- **Réponse 201** : crée `User`, déclenche email de vérification, retourne JWT temporaire (scope = `onboarding`).
-- **Side effects** :
-  1. Création `User` avec `email_verified = false`
-  2. Envoi email vérification
-  3. Création stub `Workspace` (sera finalisé à l'étape 1 de l'onboarding)
-  4. Réservation trial 14j si `plan = pro`
 
-### Signup SSO
-- Même flow que Login SSO, mais avec `?intent=signup`. À la première connexion, marquer `is_new_user = true` pour rediriger vers `/onboarding/workspace`.
+Après registration, enchaîner directement avec `createWorkspace` (onboarding step 1).
+
+**Erreurs possibles :**
+- `CONFLICT` — email déjà utilisé
+- `VALIDATION` — email mal formé
 
 ## 4. Validation password (live)
-Indicateur 4-barres :
+Indicateur de force côté frontend uniquement (backend ne valide pas la complexité) :
 - 1 barre : 8+ chars
 - 2 barres : + 1 chiffre
 - 3 barres : + 1 majuscule
 - 4 barres : + 1 caractère spécial
 
-Renvoyer côté front sans appel API ; backend revalide à submit.
-
 ## 5. États
-- **Initial**, **Loading**, **Erreur email pris** (`409 EMAIL_TAKEN`), **Erreur ToS** (`422`), **Erreur plan invalide** (`400`).
+- **Initial**, **Loading**, **Erreur email pris** (CONFLICT), **Erreur email invalide** (VALIDATION).
 
 ## 6. Règles métier
-- **RM020** — Email doit être unique (insensitive case) — sinon 409.
-- **RM021** — `plan = enterprise` → ne crée pas de subscription Stripe, marque `requires_sales_contact = true`, route → `/sales/contact`.
-- **RM022** — Trial 14j s'applique uniquement à `pro` au premier signup workspace.
-- **RM023** — Domaines email jetables (mailinator, etc.) bloqués.
+- **RM020** — Email unique insensible à la casse — sinon CONFLICT.
+- **RM021** — Plan enterprise, billing, trial : **[NON IMPLÉMENTÉ]**.
+- **RM023** — Blacklist domaines jetables : **[NON IMPLÉMENTÉ]**.
 
 ## 7. Critères d'acceptation
 ```gherkin
 Given un email non utilisé
-When je soumets signup avec plan=pro, billing_cycle=monthly
-Then un User est créé avec email_verified=false
-And un trial 14j Pro est attaché au futur workspace
-And je reçois un JWT scope=onboarding
+When je soumets signup avec email + password
+Then un User est créé
+And je reçois un user-JWT
 And je suis redirigé vers /onboarding/workspace
 ```
 
@@ -335,63 +396,87 @@ And je suis redirigé vers /onboarding/workspace
 
 ## 1. Vue d'ensemble
 - **Route** : `/onboarding/workspace`
-- **Rôle** : Finaliser le workspace (nom, slug, icon, accent color, taille équipe, région).
-- **Précondition** : JWT scope `onboarding` ou utilisateur authentifié sans workspace finalisé.
+- **Rôle** : Créer et configurer le workspace (nom, couleur, taille équipe, région).
+- **Précondition** : user-JWT valide (étape post-register ou post-login sans workspace).
 
 ## 2. Composants et données saisies
 
-| Champ | Type | Requis | Règles | Source |
-|-------|------|--------|--------|--------|
-| Workspace name | string | ✅ | 3–32 chars, `[a-z0-9-]` | Saisie |
-| URL slug | string | ✅ | Dérivé auto du nom, éditable, unique global | Saisie + check API |
-| Workspace icon | image | ❌ | PNG/JPG ≤ 2 MB, square | Upload |
-| Accent color | hex | ✅ | Parmi 6 presets | Saisie |
-| Team size | enum | ✅ | `solo` \| `2_10` \| `11_50` \| `50_plus` | Saisie |
-| Region | enum | ✅ | `eu` \| `us` \| `ap` | Saisie |
+| Champ | Type | Requis | Règles backend |
+|-------|------|--------|----------------|
+| Workspace name | string | ✅ | 2–32 chars |
+| Accent color | hex string | ❌ | Défaut `#6366f1` |
+| Team size | enum | ❌ | `solo` \| `2_10` \| `11_50` \| `50_plus` — défaut `solo` |
+| Region | enum | ❌ | `eu` \| `us` \| `ap` — défaut `eu` |
+| URL slug | — | auto | Dérivé du nom par le backend, non éditable via API |
+| Workspace icon | — | — | **[NON IMPLÉMENTÉ]** (champ `icon_url` absent du backend) |
 
 ## 3. Actions
 
-### Check slug disponibilité (debounced 300ms)
-- **API** : `GET /api/workspaces/check-slug?slug=acme-platform`
-- **Réponse** : `{ "available": true }` ou `{ "available": false, "suggestion": "acme-platform-2" }`
+### Créer le workspace
 
-### Submit
-- **API** : `PATCH /api/onboarding/workspace`
-- **Payload** :
-```json
-{
-  "name": "acme-platform",
-  "slug": "acme-platform",
-  "icon_url": "https://cdn.../w_xxx.png",
-  "accent_color": "#d97706",
-  "team_size": "2_10",
-  "region": "eu"
+```graphql
+mutation CreateWorkspace(
+  $name: String!
+  $region: String
+  $teamSize: String
+  $accentColor: String
+) {
+  createWorkspace(
+    name: $name
+    region: $region
+    teamSize: $teamSize
+    accentColor: $accentColor
+  ) {
+    id
+    name
+    slug
+    plan
+    role
+    region
+    teamSize
+    accentColor
+    createdAt
+  }
 }
 ```
-- **Réponse 200** : workspace finalisé, nouveau JWT scope = `full`, redirection `/onboarding/plan`.
+
+Le slug est auto-dérivé du nom (ex. "Acme Platform" → `acme-platform`) et rendu unique en
+suffixant un compteur si nécessaire. Il n'existe pas d'endpoint de vérification de slug
+disponible — retirer ce contrôle de l'UI ou afficher le slug généré en lecture seule après
+soumission.
+
+Après `createWorkspace`, appeler immédiatement `selectWorkspace` pour obtenir le workspace-JWT :
+
+```graphql
+mutation SelectWorkspace($workspaceId: ID!) {
+  selectWorkspace(workspaceId: $workspaceId) {
+    token
+    userId
+    email
+    workspaceId
+    role
+  }
+}
+```
 
 ## 4. États
-- **Initial** : champs pré-remplis si retour utilisateur (nom = local part de l'email).
-- **Slug check en cours** : icône loader à droite du champ.
-- **Slug pris** : badge rouge + suggestion cliquable.
+- **Initial** : champs pré-remplis (name = local part de l'email).
 - **Loading submit** : bouton "Continue" disabled + spinner.
+- **Erreur VALIDATION** : nom trop court/long.
 
 ## 5. Règles métier
-- **RM030** — Slug unique global, immuable après création (rename = ticket support).
-- **RM031** — Region permanente (pas de migration auto). Affiché en hint.
+- **RM030** — Slug non éditable par l'utilisateur ; immuable après création.
+- **RM031** — Region permanente. Affiché en hint.
 - **RM032** — Team size = télémétrie produit, n'affecte pas les permissions.
 - **RM033** — Accent color = visuel UI uniquement.
 
 ## 6. Critères d'acceptation
 ```gherkin
-Given je tape un slug déjà pris
-When le check API retourne available=false
-Then une suggestion s'affiche
-And le bouton Continue est désactivé
-
 Given tous les champs valides
 When je clique Continue
-Then PATCH /api/onboarding/workspace est appelé
+Then createWorkspace est appelé
+And selectWorkspace est enchaîné
+And je possède un workspace-JWT avec role=admin
 And je suis redirigé vers /onboarding/plan
 ```
 
@@ -401,56 +486,30 @@ And je suis redirigé vers /onboarding/plan
 
 ## 1. Vue d'ensemble
 - **Route** : `/onboarding/plan`
-- **Rôle** : Choisir Free / Pro / Enterprise + cycle de facturation.
-- **Précondition** : workspace finalisé. Saute cette étape si le plan a déjà été choisi au signup ; **mais** doit être atteignable via "Change plan" si le user est arrivé par SSO sans plan.
+- **Rôle** : Choisir Free / Pro / Enterprise.
 
-## 2. Données affichées
-| Composant | Source |
-|-----------|--------|
-| Toggle Monthly/Annual (−20%) | Front state |
-| 3 plan cards | `GET /api/plans` |
-| Trial banner 14j | Si plan sélectionné = pro |
+> **[NON IMPLÉMENTÉ]** — Pas d'API de plans, pas d'intégration Stripe, pas de trial.
+> Le champ `plan` est une string libre stockée dans le workspace. Cette étape est
+> entièrement gérée côté frontend. Le backend accepte `plan` comme paramètre de
+> `createWorkspace` mais ne l'applique pas à une subscription de paiement.
 
-## 3. Actions
+## 2. Implémentation recommandée
 
-### Get plans
-- **API** : `GET /api/plans`
-- **Réponse** :
-```json
-{
-  "data": [
-    { "id": "free",       "price_monthly": 0,   "price_annual": 0,    "features": [...] },
-    { "id": "pro",        "price_monthly": 49,  "price_annual": 470,  "features": [...], "trial_days": 14 },
-    { "id": "enterprise", "price_monthly": null,"price_annual": null, "features": [...], "contact_sales": true }
-  ]
+Afficher les 3 cartes (Free / Pro / Enterprise) de manière statique. À la sélection :
+
+```graphql
+mutation UpdateWorkspace($workspaceId: ID!, $plan: String) {
+  # updateWorkspace ne supporte pas le champ plan actuellement.
+  # Stocker le plan choisi localement et passer à l'étape suivante.
 }
 ```
 
-### Submit plan
-- **API** : `PATCH /api/workspaces/:id/plan`
-- **Payload** :
-```json
-{ "plan": "pro", "billing_cycle": "monthly" }
-```
-- Si `enterprise` → ne pas créer de subscription Stripe, marquer `pending_sales = true` et router vers Step 3 quand même (commercial gère hors flow).
+En l'état, stocker le plan choisi en `localStorage` ou dans le state Angular uniquement ;
+ne pas bloquer le flow sur un appel backend.
 
-## 4. États
-- Sélection radio par card.
-- "Selected" sur Pro par défaut.
-- Loading sur submit.
-
-## 5. Règles métier
-- **RM040** — Trial 14j sur Pro = 1 fois par workspace, jamais réactivable.
-- **RM041** — Si downgrade Pro → Free pendant le trial, le trial est perdu.
-- **RM042** — Enterprise ne charge rien automatiquement.
-
-## 6. Critères d'acceptation
-```gherkin
-Given je choisis Pro monthly
-When je clique Continue
-Then un trial Stripe de 14j est créé (status=trialing)
-And je passe à Step 3
-```
+## 3. Règles métier (UX cible — à implémenter backend)
+- **RM040** — Trial 14j sur Pro = 1 fois par workspace.
+- **RM041** — Enterprise → contact sales.
 
 ---
 
@@ -461,43 +520,86 @@ And je passe à Step 3
 - **Rôle** : Installer l'agent PodIQ et attendre le premier ping.
 
 ## 2. Composants
+
 | Composant | Type | Source |
 |-----------|------|--------|
 | Method picker (Helm / kubectl / Terraform) | 3 cards, radio | Front state |
-| Snippet d'install | `pre` éditable | Généré côté front avec le workspace token |
-| Status "Waiting for first ping" | Polling | API |
+| Snippet d'install avec le token | `pre` | Généré côté front avec le token reçu |
+| Status "Waiting for first ping" | Polling ou WS | API |
 | Bouton Copy | Action | Clipboard API |
 
 ## 3. Actions
 
 ### Récupérer le token d'installation
-- **API** : `GET /api/workspaces/:id/install-token`
-- **Réponse** :
-```json
-{ "token": "wsk_3f8a92c1e4d7b6", "expires_at": "2026-05-19T..." }
-```
-TTL : 24h. Régénérable.
 
-### Polling du premier ping
-- **API** : `GET /api/clusters/pending-ping`
-- Polling 5s, ou WebSocket `wss://api/realtime?topic=workspace.<id>.cluster.connected`.
-- **Réponse 200** : `{ "data": { "cluster": { "id": "c_...", "name": "prod-eu-west-1", "version": "1.29.3" } } }` quand l'agent a phoné.
+```graphql
+mutation GenerateInstallToken($workspaceId: ID!) {
+  generateInstallToken(workspaceId: $workspaceId) {
+    token       # ex. "wsk_3f8a92c1e4d7b6"
+    workspaceId
+    expiresAt
+  }
+}
+```
+
+TTL : 24h (géré par `expires_at`). Appeler à nouveau si expiré.
+
+Le snippet Helm à afficher (généré côté front) :
+```bash
+helm install podiq-agent podiq/agent \
+  --set installToken=<token> \
+  --set gateway=https://<votre-domaine>/graphql
+```
+
+### Attendre le premier ping — option A : polling
+
+```graphql
+query ClusterStatus($workspaceId: ID!) {
+  clusterStatus(workspaceId: $workspaceId) {
+    id
+    name
+    k8sVersion
+    status      # "connected" | "disconnected"
+    lastHeartbeat
+    createdAt
+  }
+}
+```
+
+Poller toutes les 5s jusqu'à obtenir un cluster avec `status == "connected"`.
+
+### Attendre le premier ping — option B : subscription (recommandé)
+
+```graphql
+subscription ClusterConnected($workspaceId: ID!) {
+  clusterConnected(workspaceId: $workspaceId) {
+    id
+    name
+    k8sVersion
+    status
+    lastHeartbeat
+  }
+}
+```
+
+Via WebSocket `graphql-ws`. Le stream émet **une seule fois** dès qu'un cluster `connected`
+est détecté, puis se ferme.
 
 ## 4. États
-- **Idle (recherche)** : badge orange "Waiting for first ping" pulse.
-- **Connected** : badge vert "Connected · prod-eu-west-1" + bouton Continue activé.
+- **Idle** : badge orange "Waiting for first ping" avec animation pulse.
+- **Connected** : badge vert "Connected · \<cluster-name\>" + bouton Continue activé.
 - **Timeout 10 min** : afficher troubleshoot tips inline.
 
 ## 5. Règles métier
-- **RM050** — L'agent K8s envoie un `POST /api/agent/heartbeat` avec le token → crée `Cluster` lié au workspace.
-- **RM051** — Agent en `read-only` strict : pas de `exec`, pas de `port-forward`.
-- **RM052** — Une connexion = un cluster. Plusieurs clusters = relancer l'install dans un autre context.
+- **RM050** — L'agent envoie `agentHeartbeat` avec le token → crée le `Cluster` lié au workspace.
+- **RM051** — Agent en read-only strict : pas de `exec`, pas de `port-forward`.
+- **RM052** — Une connexion = un cluster. Plusieurs clusters = relancer l'install.
 
 ## 6. Critères d'acceptation
 ```gherkin
 Given un user à l'étape Connect cluster
-When l'agent envoie un heartbeat valide
-Then le polling détecte la connexion sous 10s
+When l'agent envoie un agentHeartbeat valide
+Then le polling ou la subscription détecte la connexion sous 10s
 And le bouton Continue s'active
 ```
 
@@ -507,54 +609,102 @@ And le bouton Continue s'active
 
 ## 1. Vue d'ensemble
 - **Route** : `/onboarding/team`
-- **Rôle** : Inviter des coéquipiers et configurer auto-invite par domaine.
+- **Rôle** : Inviter des coéquipiers.
 
 ## 2. Composants
+
 | Composant | Source |
 |-----------|--------|
 | Email input + role select + bouton Add | Saisie |
-| Liste invites pending | `GET /api/invitations` |
+| Liste invites pending | `listInvitations` |
 | Role explainer (Admin/Member/Viewer) | Statique |
-| Toggle auto-invite by domain | API |
-| Copy invite link | Action |
+| Toggle auto-invite by domain | **[NON IMPLÉMENTÉ]** |
+| Copy invite link | `generateInviteLink` |
 
 ## 3. Actions
 
 ### Ajouter une invitation
-- **API** : `POST /api/invitations`
-- **Payload** :
-```json
-{ "email": "marie@acme.io", "role": "admin" }
+
+```graphql
+mutation InviteMember($workspaceId: ID!, $email: String!, $role: String) {
+  inviteMember(workspaceId: $workspaceId, email: $email, role: $role) {
+    id
+    token
+    email
+    role
+    status    # "pending"
+    expiresAt
+    createdAt
+  }
+}
 ```
-- **Réponse 201** : `{ "data": { "id": "inv_...", "email": "...", "role": "admin", "status": "sent", "sent_at": "..." } }`
 
-### Lister
-- **API** : `GET /api/invitations?status=pending`
+Rôles acceptés : `"admin"` | `"member"` | `"viewer"`. Défaut : `"member"`.
 
-### Auto-invite
-- **API** : `PATCH /api/workspaces/:id/auto-invite`
-- **Payload** : `{ "enabled": true, "domain": "acme.io", "default_role": "member" }`
-- **Validation** : domaine doit matcher l'email de l'admin courant.
+### Lister les invitations
 
-### Copy invite link
-- Génère un lien à usage limité : `GET /api/invitations/link` → `{ "url": "https://acme.podiq.io/join/abc123", "expires_at": "..." }`.
+```graphql
+query ListInvitations($workspaceId: ID!, $status: String) {
+  listInvitations(workspaceId: $workspaceId, status: $status) {
+    id
+    email
+    role
+    status    # "pending" | "accepted" | "revoked" | "expired"
+    expiresAt
+    createdAt
+  }
+}
+```
+
+### Révoquer une invitation
+
+```graphql
+mutation RevokeInvitation($invitationId: ID!) {
+  revokeInvitation(invitationId: $invitationId)
+}
+```
+
+### Générer un lien d'invitation (ouvert, sans email cible)
+
+```graphql
+mutation GenerateInviteLink($workspaceId: ID!) {
+  generateInviteLink(workspaceId: $workspaceId) {
+    token      # UUID — construire le lien : /join/<token>
+    expiresAt
+  }
+}
+```
+
+Le frontend construit le lien : `https://<domaine>/join/<token>`.
+La route `/join/:token` appelle `acceptInvitation(token)`.
+
+### Accepter une invitation (route `/join/:token`)
+
+L'utilisateur doit être authentifié (user-JWT ou workspace-JWT) avant d'appeler :
+
+```graphql
+mutation AcceptInvitation($token: String!) {
+  acceptInvitation(token: $token) {
+    token        # nouveau workspace-JWT
+    workspaceId
+    role
+    userId
+    email
+  }
+}
+```
+
+Retourne un workspace-JWT pour le workspace de l'invitation. Upgrade-only du rôle (jamais de downgrade).
 
 ## 4. États
-- Invite list vide → état "No invites yet".
-- Status par invite : `sent` (vert ✓), `draft` (gris ⏱), `accepted`, `revoked`.
+- Invite list vide → "No invites yet".
+- Status par invite : `pending` (⏱), `accepted` (✅), `revoked` (❌), `expired` (🕐).
 
 ## 5. Règles métier
-- **RM060** — Email d'invitation expire au bout de 7j.
-- **RM061** — Un invité peut être assigné à un rôle ≤ celui de l'inviteur.
-- **RM062** — Auto-invite ne s'applique qu'à `member`/`viewer` (jamais admin).
-- **RM063** — Workspace plan `free` limité à 3 membres totaux, `pro` à 50, `enterprise` illimité.
-
-## 6. Critères d'acceptation
-```gherkin
-Given un workspace pro avec 49 membres
-When j'invite un 50e
-Then 422 BUSINESS_RULE_VIOLATION (RM063)
-```
+- **RM060** — Invitation expire après 7 jours.
+- **RM061** — Seul un admin peut inviter et révoquer.
+- **RM062** — Auto-invite par domaine : **[NON IMPLÉMENTÉ]**.
+- **RM063** — Limites membres par plan : **[NON IMPLÉMENTÉ]** côté backend.
 
 ---
 
@@ -562,50 +712,140 @@ Then 422 BUSINESS_RULE_VIOLATION (RM063)
 
 ## 1. Vue d'ensemble
 - **Route** : `/onboarding/alerts`
-- **Rôle** : Choisir règles de sévérité et canaux de notification.
+- **Rôle** : Configurer les règles d'alerte et les canaux de notification.
 
 ## 2. Composants
+
 | Composant | Source |
 |-----------|--------|
-| 4 toggles règles | Front state → API |
-| 6 channel cards (Slack, PagerDuty, Email, Webhook, Teams, Discord) | `GET /api/channels/available` |
-| Quiet hours toggle + range | API |
+| Toggles règles d'alerte | `createAlertRule` + `toggleAlertRule` |
+| 6 channel cards (Slack, PagerDuty, Email, Webhook, Teams, Discord) | `connectChannel` |
+| Quiet hours | `setQuietHours` |
 
 ## 3. Actions
 
-### Liste règles par défaut
-- **API** : `GET /api/alert-rules/defaults` → 4 rules pré-cochées.
+### Créer une règle d'alerte
 
-### Activer/désactiver une règle
-- **API** : `PATCH /api/alert-rules/:id`
-- **Payload** : `{ "enabled": true }`
+```graphql
+mutation CreateAlertRule($workspaceId: ID!, $eventType: String!, $name: String) {
+  createAlertRule(workspaceId: $workspaceId, eventType: $eventType, name: $name) {
+    id
+    workspaceId
+    name
+    eventType
+    enabled
+    createdAt
+  }
+}
+```
 
-### Connecter un channel
-- **Slack/PD/Teams/Discord** : OAuth flow → `GET /api/channels/:type/connect` → redirect.
-- **Webhook** : modal pour saisir URL + secret → `POST /api/channels` payload `{ type: "webhook", url, secret }`.
-- **Email** : déjà connecté implicitement (l'email du compte).
+`eventType` acceptés (valeurs de l'enum `AlertRule.EventType` backend) : à confirmer selon
+le modèle Django — utiliser les valeurs retournées par les règles existantes.
 
-### Quiet hours
-- **API** : `PATCH /api/workspaces/:id/quiet-hours`
-- **Payload** : `{ "enabled": true, "start": "22:00", "end": "07:00", "tz": "Europe/Paris", "weekdays_only": true }`
+### Activer / désactiver une règle
+
+```graphql
+mutation ToggleAlertRule($ruleId: ID!, $enabled: Boolean!) {
+  toggleAlertRule(ruleId: $ruleId, enabled: $enabled) {
+    id
+    enabled
+  }
+}
+```
+
+### Connecter un canal de notification
+
+```graphql
+mutation ConnectChannel($workspaceId: ID!, $channelType: String!, $config: String!) {
+  connectChannel(workspaceId: $workspaceId, channelType: $channelType, config: $config) {
+    id
+    workspaceId
+    type
+    enabled
+    createdAt
+  }
+}
+```
+
+`channelType` : `"slack"` | `"pagerduty"` | `"email"` | `"webhook"` | `"teams"` | `"discord"`.
+
+`config` est un **JSON sérialisé en string**. Exemples :
+```json
+// Slack
+"{\"webhook_url\": \"https://hooks.slack.com/...\"}"
+
+// PagerDuty
+"{\"integration_key\": \"abc123\"}"
+
+// Email
+"{\"email\": \"ops@acme.io\"}"
+
+// Webhook
+"{\"url\": \"https://mon-serveur.io/podiq\", \"secret\": \"xyz\"}"
+
+// Teams
+"{\"webhook_url\": \"https://...\"}"
+
+// Discord
+"{\"webhook_url\": \"https://discord.com/api/webhooks/...\"}"
+```
+
+> **Pas d'OAuth redirect** — la configuration se fait par saisie directe des credentials
+> (webhook URL, clé d'intégration, etc.).
+
+### Déconnecter un canal
+
+```graphql
+mutation DisconnectChannel($channelId: ID!) {
+  disconnectChannel(channelId: $channelId)
+}
+```
+
+### Configurer les quiet hours
+
+```graphql
+mutation SetQuietHours(
+  $workspaceId: ID!
+  $enabled: Boolean!
+  $startTime: String!
+  $endTime: String!
+  $timezone: String
+  $weekdaysOnly: Boolean
+) {
+  setQuietHours(
+    workspaceId: $workspaceId
+    enabled: $enabled
+    startTime: $startTime
+    endTime: $endTime
+    timezone: $timezone
+    weekdaysOnly: $weekdaysOnly
+  ) {
+    id
+    enabled
+    startTime
+    endTime
+    timezone
+    weekdaysOnly
+  }
+}
+```
+
+`startTime` / `endTime` : format `"HH:MM"` (ex. `"22:00"`, `"07:00"`).
+`timezone` : IANA timezone (ex. `"Europe/Paris"`). Défaut `"UTC"`.
+
+> **[NON IMPLÉMENTÉ]** — Il n'existe pas de query pour lister les règles existantes ou les
+> canaux connectés. Le frontend doit maintenir l'état local jusqu'à l'implémentation des
+> queries correspondantes.
 
 ## 4. États
-- Channel `disabled` (ex: Teams "Coming soon") → bouton désactivé.
-- Channel `connected` → tag vert + lien Configure.
+- Channel connecté → tag vert + bouton Disconnect.
+- Quiet hours actives → range affichée.
 
 ## 5. Règles métier
-- **RM070** — Au moins 1 channel doit être connecté pour valider l'étape (sauf bouton "Skip — wire later").
-- **RM071** — Quiet hours ne bloque PAS les alertes P1 (crit).
-- **RM072** — Channel Webhook nécessite une URL `https://`.
-- **RM073** — Dedupe par défaut : 5 min crit, 10 min warn.
-
-## 6. Critères d'acceptation
-```gherkin
-Given un channel Slack connecté
-When un pod entre en CrashLoopBackOff
-And la règle "Pod CrashLoop" est ON
-Then une notification est envoyée au channel Slack
-```
+- **RM070** — Admin requis pour toutes ces mutations.
+- **RM071** — Quiet hours ne bloque pas les alertes critiques (à implémenter dans l'envoi).
+- **RM072** — Webhook nécessite URL `https://`.
+- **RM073** — Dedupe : **[NON IMPLÉMENTÉ]**.
 
 ---
 
@@ -617,105 +857,233 @@ Then une notification est envoyée au channel Slack
 
 ## 2. Composants
 - Big checkmark.
-- Recap (workspace name, cluster, team count, channels).
+- Recap (workspace name, cluster, channels).
 - Suggested next (add 2e cluster, install GitHub Action, take tour).
 
 ## 3. Actions
-- CTA "Open dashboard" → `/dashboard`.
-- CTA "Take the tour" → onboarding tour overlay sur le dashboard (LocalStorage flag `tour_seen`).
 
-## 4. États
-- État unique de succès. Si on y arrive avec onboarding incomplet → rediriger vers la 1re étape manquante.
+Marquer le workspace comme onboardé :
+
+```graphql
+mutation UpdateWorkspace($workspaceId: ID!, $name: String) {
+  updateWorkspace(workspaceId: $workspaceId) {
+    id
+    onboardedAt
+  }
+}
+```
+
+> **Note** : `updateWorkspace` ne prend pas `onboarded_at` en paramètre explicite — ce champ
+> est géré côté backend. À confirmer si l'update sans champs modifiés suffit à le setter,
+> ou si un champ dédié doit être ajouté au backend.
+
+- CTA "Open dashboard" → `/dashboard`.
+- CTA "Take the tour" → flag `tour_seen` en `localStorage`.
 
 ## 5. Règles métier
-- **RM080** — `workspace.onboarded_at` est set à cette étape.
+- **RM080** — `workspace.onboarded_at` est présent dans `WorkspaceType`.
 
 ---
 
 # 10 · Cluster dashboard
 
 ## 1. Vue d'ensemble
-- **Route** : `/dashboard` (ou `/clusters/:slug`)
-- **Rôle** : Vue principale santé cluster en temps réel.
+- **Route** : `/dashboard`
+- **Rôle** : Vue principale santé cluster.
 
-## 2. Composants
+## 2. Composants implémentés
 
 | Composant | Donnée | Source |
 |-----------|--------|--------|
-| KPI MTTR | string (4m) | `GET /api/clusters/:id/metrics?range=24h` |
-| KPI Pages | string (12) | idem |
-| KPI Memory patterns | number | idem |
-| KPI healthy pods | "298 / 312" | idem |
-| Liste services (top N) | array | `GET /api/services?cluster=...&sort=health` |
-| Active incidents | array | `GET /api/incidents?status=open` |
-| Sparklines par service | timeseries | `GET /api/services/:id/timeseries` |
-| Cluster switcher (sidebar) | list | `GET /api/clusters` |
-| Recent deploys ribbon | array | `GET /api/deploys?recent=true` |
+| Liste clusters | statut + last_heartbeat | `clusterStatus` |
+| Analyses récentes (incidents) | historique par pod | `analysisHistory` |
+| Subscription connexion cluster | temps réel | `clusterConnected` |
+| Subscription statut job | temps réel | `jobStatus` |
+
+## 2b. Composants non implémentés **[NON IMPLÉMENTÉ]**
+
+| Composant | Roadmap |
+|-----------|---------|
+| KPI MTTR | Métriques agrégées — backend non implémenté |
+| KPI Pages / Healthy pods | idem |
+| Liste services + sparklines | Pas d'API services |
+| Recent deploys | Pas d'API deploys |
+| Cluster switcher avec métriques | Données basiques disponibles via `clusterStatus` |
 
 ## 3. Actions
-- Clic sur service row → `/services/:name`
-- Clic sur incident → `/incidents/:id`
-- Range picker (1h/24h/7d/30d) → refetch metrics
-- Cluster switcher → switch context
+
+### Récupérer les clusters du workspace
+
+```graphql
+query ClusterStatus($workspaceId: ID!) {
+  clusterStatus(workspaceId: $workspaceId) {
+    id
+    name
+    k8sVersion
+    status          # "connected" | "disconnected"
+    workspaceId
+    lastHeartbeat   # ISO datetime ou null
+    createdAt
+  }
+}
+```
+
+### Récupérer l'historique des analyses (feed d'incidents)
+
+```graphql
+query AnalysisHistory($podName: String!, $namespace: String!, $limit: Int) {
+  analysisHistory(podName: $podName, namespace: $namespace, limit: $limit) {
+    id
+    podName
+    namespace
+    errorType
+    rootCause
+    solution
+    confidence
+    isRecurring
+    recurrenceCount
+    createdAt
+    analysisType
+    riskLevel
+  }
+}
+```
+
+> `analysisHistory` requiert `podName` + `namespace`. Pour le dashboard global, il n'existe
+> pas de query "tous les incidents du workspace". À implémenter backend ou afficher l'historique
+> des pods les plus récents connus du frontend.
+
+### Subscription cluster connecté
+
+```graphql
+subscription ClusterConnected($workspaceId: ID!) {
+  clusterConnected(workspaceId: $workspaceId) {
+    id
+    name
+    status
+    lastHeartbeat
+  }
+}
+```
 
 ## 4. États
 - **Loading** : skeleton + shimmer.
-- **Empty** : voir écran 20 (Day 0).
-- **Disconnected** : voir écran 21.
-- **Nominal** : KPIs + tableau.
+- **Empty** : voir écran 20 (Day 0) — `clusterStatus` retourne liste vide.
+- **Disconnected** : voir écran 21 — `status == "disconnected"` ou `lastHeartbeat > 2 min`.
+- **Nominal** : liste clusters + analyses récentes.
 
 ## 5. Règles métier
-- **RM100** — Tous les chiffres se rafraîchissent toutes les 30s (polling ou WS).
-- **RM101** — Si `cluster.last_heartbeat > 2 min` → état `disconnected`.
-
-## 6. Critères d'acceptation
-```gherkin
-Given un cluster connecté avec 312 pods
-When 14 pods sont unhealthy
-Then le KPI "Healthy pods" affiche "298 / 312"
-```
+- **RM100** — Rafraîchissement toutes les 30s (polling `clusterStatus`) ou via subscription.
+- **RM101** — Si `last_heartbeat > 2 min` → état `disconnected`.
 
 ---
 
 # 11 · Incident analysis
 
 ## 1. Vue d'ensemble
-- **Route** : `/incidents/:id`
-- **Rôle** : Diagnostic complet d'un incident — root cause, blast radius, memory matches, fix proposé.
+- **Route** : `/incidents/:jobId`
+- **Rôle** : Lancer et afficher le diagnostic d'un incident — root cause, confidence, mémoire, corrélation.
 
 ## 2. Composants
 
 | Composant | Source |
 |-----------|--------|
-| Header (titre, pod, sévérité, time) | `GET /api/incidents/:id` |
-| Tag CRASHLOOPBACKOFF, restarts count | idem |
-| Root cause card + confidence % | `incident.root_cause` |
-| Memory recall list (n prior matches) | `incident.memory_matches[]` |
-| Blast radius graph | `incident.blast_radius` |
-| Proposed fix (PR diff) | `incident.proposed_fix` |
-| Action buttons : Apply fix, Open PR, Dismiss | — |
-| Timeline events | `GET /api/incidents/:id/timeline` |
+| Header (pod, namespace, statut job) | `analysisJob` |
+| Root cause + confidence % | `job.result.rootCause` + `job.result.confidence` |
+| Explanation | `job.result.explanation` |
+| Solution proposée | `job.result.solution` |
+| Type d'erreur | `job.result.errorType` |
+| Récurrence (Memory recall) | `job.result.isRecurring` + `job.result.recurrenceCount` |
+| Corrélation inter-services | `job.result.correlatedService` + `job.result.correlationExplanation` |
+| Progression temps réel | `jobStatus` subscription |
 
 ## 3. Actions
 
-### Apply fix
-- **API** : `POST /api/incidents/:id/apply-fix`
-- Crée une PR GitHub (via integration) ou affiche le YAML à appliquer si pas d'intégration.
+### Lancer une analyse
 
-### Dismiss
-- **API** : `POST /api/incidents/:id/dismiss`
-- **Payload** : `{ "reason": "false_positive" | "duplicate" | "resolved_manually", "note": "..." }`
+```graphql
+mutation AnalyzeIncident(
+  $podName: String!
+  $namespace: String!
+  $logs: String
+  $events: String
+  $describeOutput: String
+) {
+  analyzeIncident(
+    podName: $podName
+    namespace: $namespace
+    logs: $logs
+    events: $events
+    describeOutput: $describeOutput
+  ) {
+    jobId
+    status    # "pending"
+    createdAt
+  }
+}
+```
 
-### Acknowledge
-- **API** : `POST /api/incidents/:id/ack`
+L'analyse est **asynchrone**. La mutation retourne immédiatement un `jobId`. Suivre la
+progression via polling ou subscription.
+
+### Suivre le statut — polling
+
+```graphql
+query AnalysisJob($jobId: ID!) {
+  analysisJob(jobId: $jobId) {
+    jobId
+    status      # "pending" | "running" | "complete" | "failed"
+    error
+    createdAt
+    result {
+      errorType
+      rootCause
+      explanation
+      solution
+      confidence
+      isRecurring
+      recurrenceCount
+      correlatedService
+      correlationExplanation
+    }
+  }
+}
+```
+
+### Suivre le statut — subscription (recommandé)
+
+```graphql
+subscription JobStatus($jobId: ID!) {
+  jobStatus(jobId: $jobId) {
+    jobId
+    status
+    error
+    result {
+      errorType
+      rootCause
+      explanation
+      solution
+      confidence
+      isRecurring
+      recurrenceCount
+      correlatedService
+      correlationExplanation
+    }
+  }
+}
+```
+
+Le stream émet à chaque changement de statut et s'arrête quand `status == "complete"` ou `"failed"`.
 
 ## 4. États
-- `open`, `acknowledged`, `mitigating`, `resolved`, `dismissed`.
+- `pending` / `running` : spinner + "Analyzing..."
+- `complete` : affichage complet du résultat.
+- `failed` : afficher `job.error`.
 
 ## 5. Règles métier
-- **RM110** — Apply fix nécessite rôle `member` mini.
-- **RM111** — Confidence < 50% → bouton Apply fix grisé + tooltip "Low confidence, review manually".
-- **RM112** — Un incident résolu peut être ré-ouvert dans les 24h s'il reflambe.
+- **RM110** — Apply fix, dismiss, acknowledge : **[NON IMPLÉMENTÉ]**.
+- **RM111** — Confidence < 50% → afficher warning "Low confidence" côté front.
+- **RM112** — Ré-ouverture d'incident : **[NON IMPLÉMENTÉ]**.
 
 ---
 
@@ -723,56 +1091,70 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/memory`
-- **Rôle** : Liste tous les patterns appris et leur fréquence.
+- **Rôle** : Visualiser les patterns récurrents détectés par le moteur de mémoire.
 
 ## 2. Composants
+
 | Composant | Source |
 |-----------|--------|
-| Search + filtres (service, severity) | Front state |
-| Table patterns | `GET /api/memory-patterns` |
-| Colonnes : fingerprint, première vue, dernière vue, occurrences, services impactés | idem |
-| Détail panel (clic ligne) | `GET /api/memory-patterns/:id` |
+| Table analyses récurrentes | `analysisHistory` filtré sur `isRecurring == true` |
+| Colonnes : pod, namespace, error type, occurrences, root cause | idem |
+| Détail panel (clic ligne) | champs de `AnalysisHistoryItem` |
 
 ## 3. Actions
-- Recherche full-text → query param `?q=`
-- Filtre service → `?service=auth-api`
-- Édition manuelle d'un pattern (admin) → `PATCH /api/memory-patterns/:id`
-- Suppression pattern → `DELETE /api/memory-patterns/:id` (admin only)
+
+```graphql
+query AnalysisHistory($podName: String!, $namespace: String!, $limit: Int) {
+  analysisHistory(podName: $podName, namespace: $namespace, limit: $limit) {
+    id
+    podName
+    namespace
+    errorType
+    rootCause
+    isRecurring
+    recurrenceCount
+    createdAt
+    analysisType
+  }
+}
+```
+
+Filtrer côté frontend sur `isRecurring == true`.
+
+> **[NON IMPLÉMENTÉ]** — Il n'y a pas de query globale "tous les patterns du workspace".
+> La gestion de patterns (édition, suppression, blacklist) n'est pas disponible.
 
 ## 4. Règles métier
-- **RM120** — Patterns expirent au bout de 90j sans occurrence (plan Free) ou jamais (Pro+).
-- **RM121** — Pattern privé au workspace, jamais partagé cross-workspace.
+- **RM120** — Expiration des patterns : **[NON IMPLÉMENTÉ]**.
+- **RM121** — Patterns privés au workspace.
 
 ---
 
 # 13 · Cross-service correlation
 
 ## 1. Vue d'ensemble
-- **Route** : `/correlation` (ou intégré dans Incident)
-- **Rôle** : Visualiser le blast radius — quels services dépendent du service en panne.
+- **Route** : `/correlation` ou intégré dans l'écran 11 (incident analysis).
 
 ## 2. Composants
-- Graphe SVG (nodes = services, edges = dépendances HTTP/gRPC).
-- Edges colorés par statut (crit/warn/ok).
-- Sidebar list services impactés avec %.
+- Affichage de `correlatedService` et `correlationExplanation` issus de `AnalysisResultType`.
+- Graphe SVG de dépendances : **[NON IMPLÉMENTÉ]** côté backend.
 
-## 3. Données
-- **API** : `GET /api/correlations?root_service=auth-api&window=15m`
-- **Réponse** :
-```json
-{
-  "data": {
-    "root": { "id": "svc_authapi", "name": "auth-api", "status": "crit" },
-    "edges": [
-      { "from": "auth-api", "to": "payments", "error_rate_delta": 1.0, "label": "5xx 100%" },
-      { "from": "auth-api", "to": "checkout", "error_rate_delta": 0.7, "label": "5xx 70%" }
-    ]
-  }
+## 3. Données disponibles
+
+Les champs de corrélation sont disponibles dans le résultat d'une analyse :
+
+```graphql
+result {
+  correlatedService        # nom du service corrélé (ou null)
+  correlationExplanation   # explication textuelle (ou null)
 }
 ```
 
+> Une API dédiée `/api/correlations` avec graphe (nodes/edges) n'existe pas. La corrélation
+> est une info textuelle enrichie par le moteur AI, pas un graphe de dépendances calculé.
+
 ## 4. Règles métier
-- **RM130** — Détection basée sur les traces (OTel) si disponibles, sinon sur les métriques HTTP.
+- **RM130** — Corrélation basée sur la fenêtre temporelle `CORRELATION_WINDOW_MINUTES` (défaut 15 min) et les données `namespace_pods` envoyées par l'agent.
 
 ---
 
@@ -780,39 +1162,52 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/predeploy`
-- **Rôle** : Scanner un manifeste K8s avant deploy et matcher avec memory patterns.
+- **Rôle** : Scanner un manifeste K8s avant deploy.
 
 ## 2. Composants
+
 | Composant | Source |
 |-----------|--------|
 | Upload zone / paste YAML | Saisie |
-| Diff vs version précédente | Calculé backend |
-| Liste warnings/errors | `POST /api/predeploy/scan` |
-| Score safety 0-100 | idem |
+| Risk level (low \| medium \| high \| critical) | `scanManifest.riskLevel` |
+| Summary textuel | `scanManifest.summary` |
+| Liste risques | `scanManifest.risks[]` |
 
 ## 3. Actions
 
-### Scan
-- **API** : `POST /api/predeploy/scan`
-- **Payload** :
-```json
-{ "manifest": "<yaml>", "target_cluster": "prod-eu-west-1", "service": "auth-api" }
-```
-- **Réponse** :
-```json
-{
-  "data": {
-    "score": 72,
-    "findings": [
-      { "severity": "crit", "rule": "missing_env", "field": "DATABASE_URL", "matches_pattern": "p_abc", "history": "Caused 3 prior outages" }
-    ]
+### Scanner via GraphQL (frontend web)
+
+```graphql
+mutation ScanManifest($yamlContent: String!, $manifestType: String) {
+  scanManifest(yamlContent: $yamlContent, manifestType: $manifestType) {
+    riskLevel    # "low" | "medium" | "high" | "critical"
+    summary
+    risks {
+      severity     # "low" | "medium" | "high" | "critical"
+      category
+      description
+      fix
+    }
   }
 }
 ```
 
+`manifestType` : optionnel (ex. `"Deployment"`, `"StatefulSet"`).
+
+### Scanner via REST (CI/CD pipeline)
+
+```
+POST /api/v1/cicd/scan
+Header: X-Api-Key: <api_key>
+Content-Type: text/plain (ou application/x-yaml)
+Body: <contenu YAML brut>
+```
+
+Exit codes : `0` (OK), `1` (warning), `2` (bloquant).
+
 ## 4. Règles métier
-- **RM140** — Score < 50 = bloquant (CI fail) si CI/CD integration activée en mode strict.
-- **RM141** — Findings groupés par sévérité.
+- **RM140** — Score de sécurité numérique (0-100) : **[NON IMPLÉMENTÉ]** — le backend retourne `riskLevel` (enum), pas un score numérique.
+- **RM141** — Risques groupés par sévérité côté frontend.
 
 ---
 
@@ -820,21 +1215,42 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/cicd`
-- **Rôle** : Gérer les API keys + webhooks pour intégrer PodIQ à GitHub Actions/GitLab CI/CircleCI.
+- **Rôle** : Gérer les API keys pour pipelines CI/CD.
 
 ## 2. Composants
-- Liste API keys avec scope.
+- Liste API keys existantes. **[NON IMPLÉMENTÉ]** — pas de query pour lister les keys.
 - Bouton "Create key" → modal écran 30.
-- Boutons d'install GitHub Action, GitLab CI snippet.
-- Webhook events list.
+- Snippets GitHub Actions / GitLab CI (statiques côté frontend).
 
 ## 3. Actions
-- CRUD API keys : `GET/POST/DELETE /api/keys`
-- Liste webhooks : `GET /api/webhooks`
+
+### Créer une API key
+
+```graphql
+mutation CreateApiKey($name: String!) {
+  createApiKey(name: $name) {
+    keyId
+    rawKey     # valeur brute — afficher UNE SEULE FOIS
+    name
+    createdAt
+  }
+}
+```
+
+> Pas de `scopes` ni de `expiresAt` — ces champs ne sont pas implémentés.
+
+### Révoquer une API key
+
+```graphql
+mutation RevokeApiKey($keyId: String!) {
+  revokeApiKey(keyId: $keyId)
+}
+```
 
 ## 4. Règles métier
-- **RM150** — API key visible 1 seule fois à la création (irrécupérable ensuite).
-- **RM151** — Scopes : `read:incidents`, `write:predeploy`, `admin:workspace`.
+- **RM150** — `rawKey` affiché une seule fois. Non récupérable ensuite.
+- **RM151** — Scopes : **[NON IMPLÉMENTÉ]**.
+- **RM152** — La key s'utilise dans `POST /api/v1/cicd/scan` via `X-Api-Key: <rawKey>`.
 
 ---
 
@@ -842,19 +1258,22 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/incidents`
-- **Rôle** : Liste paginée de tous les incidents avec filtres.
+- **Rôle** : Liste paginée de toutes les analyses.
 
 ## 2. Composants
-- Filtres : status, severity, service, cluster, range.
-- Table incidents : title, severity, status, service, age, assignee.
-- Bulk actions : ack, dismiss, assign.
+- Table analyses : pod, namespace, error type, confidence, date, is_recurring.
+- Filtres : analysis_type, is_recurring.
 
 ## 3. Actions
-- **API** : `GET /api/incidents?status=open&severity=crit&cursor=...`
-- Bulk ack : `POST /api/incidents/bulk-ack` payload `{ ids: [...] }`
+
+> **[NON IMPLÉMENTÉ]** — Il n'existe pas de query "tous les incidents du workspace". La query
+> `analysisHistory` requiert `podName` + `namespace`. Une query globale workspace-level est
+> nécessaire côté backend pour cet écran.
+
+En attendant, afficher les analyses récentes depuis les pods suivis ou un état vide.
 
 ## 4. Règles métier
-- **RM160** — Viewer ne voit pas les boutons d'action bulk.
+- **RM160** — Bulk ack / dismiss : **[NON IMPLÉMENTÉ]**.
 
 ---
 
@@ -862,20 +1281,34 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/pods/:name`
-- **Rôle** : Détail complet d'un pod : events, logs récents, métriques, restarts.
+- **Rôle** : Détail complet d'un pod.
 
-## 2. Composants
-- Header pod (name, ns, node, image, age).
-- Tabs : Overview / Events / Logs / Metrics / Memory matches.
-- Quick actions : Restart pod (member+), Open shell (admin) [À CONFIRMER si exec autorisé — design dit read-only strict, contradiction].
+## 2. Composants disponibles
+- Historique des analyses du pod via `analysisHistory(podName, namespace)`.
+- Lancer une nouvelle analyse via `analyzeIncident`.
 
 ## 3. APIs
-- `GET /api/pods/:name`
-- `GET /api/pods/:name/events`
-- `GET /api/pods/:name/logs?tail=200`
-- `GET /api/pods/:name/metrics?range=1h`
 
-[AMBIGUÏTÉ] Le bouton "Restart pod" est-il dans le scope read-only ? **À CONFIRMER**.
+```graphql
+query AnalysisHistory($podName: String!, $namespace: String!) {
+  analysisHistory(podName: $podName, namespace: $namespace, limit: 20) {
+    id
+    errorType
+    rootCause
+    solution
+    confidence
+    isRecurring
+    recurrenceCount
+    createdAt
+  }
+}
+```
+
+> **[NON IMPLÉMENTÉ]** — Events en temps réel, logs récents, métriques CPU/RAM, heatmap
+> restarts : ces données proviennent de l'agent K8s et ne sont pas exposées via l'API gateway.
+
+## 4. Règles métier
+- **RM170** — Restart pod : **[NON IMPLÉMENTÉ]** (agent read-only strict).
 
 ---
 
@@ -883,20 +1316,11 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/services/:name`
-- **Rôle** : Vue agrégée d'un service (n pods, SLOs, deploys récents, incidents).
+- **Rôle** : Vue agrégée d'un service.
 
-## 2. Composants
-- Header service + SLO badges.
-- Sparklines (latency p50/p95/p99, error rate, RPS).
-- Tableau pods.
-- Liste deploys récents.
-- Incidents history.
-
-## 3. APIs
-- `GET /api/services/:name`
-- `GET /api/services/:name/pods`
-- `GET /api/services/:name/timeseries?metric=latency_p99&range=24h`
-- `GET /api/services/:name/deploys`
+> **[NON IMPLÉMENTÉ]** — Le concept de "Service" (regroupement de pods) n'existe pas dans
+> le backend actuel. Seuls les pods individuels sont trackés via `analysisHistory`.
+> Cet écran nécessite une implémentation backend dédiée.
 
 ---
 
@@ -904,49 +1328,56 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/clusters/:name`
-- **Rôle** : Vue de bas niveau d'un cluster — nodes, capacity, version K8s.
+- **Rôle** : Vue de bas niveau d'un cluster.
 
-## 2. Composants
-- Nodes table (cpu/mem/pods alloc).
-- Namespaces.
-- Agent status (version, last heartbeat).
+## 2. Données disponibles
 
-## 3. APIs
-- `GET /api/clusters/:name`
-- `GET /api/clusters/:name/nodes`
-- `GET /api/clusters/:name/namespaces`
+```graphql
+query ClusterStatus($workspaceId: ID!) {
+  clusterStatus(workspaceId: $workspaceId) {
+    id
+    name
+    k8sVersion
+    status
+    lastHeartbeat
+    createdAt
+  }
+}
+```
+
+> **[NON IMPLÉMENTÉ]** — Nodes, capacité CPU/RAM, namespaces, agent version : non exposés
+> par l'API.
 
 ---
 
 # 20 · Empty state (Day 0 dashboard)
 
 ## 1. Vue d'ensemble
-- **Route** : `/dashboard` quand aucun cluster connecté ou cluster vide.
-- **Rôle** : Onboarder l'utilisateur sur un dashboard vide.
+- **Route** : `/dashboard` quand `clusterStatus` retourne une liste vide.
 
 ## 2. Composants
 - Illustration "no data yet".
 - CTA "Connect a cluster" → `/onboarding/cluster`.
-- Sample data toggle (mode demo) → flag `?demo=true`.
 
 ## 3. Règles métier
-- **RM200** — Si `workspace.clusters.count == 0` → toujours afficher cet état au lieu du dashboard nominal.
+- **RM200** — Si `clusterStatus([workspaceId]).length == 0` → afficher cet état.
 
 ---
 
-# 21 · Cluster disconnected (error state)
+# 21 · Cluster disconnected
 
 ## 1. Vue d'ensemble
-- **Rôle** : Avertir que l'agent a stoppé de phoner.
+- Bannière ou état d'erreur sur le dashboard.
+- Déclencheur : `cluster.status == "disconnected"` ou `lastHeartbeat` > 2 min.
 
 ## 2. Composants
-- Banner rouge "Cluster <name> hasn't pinged in 5m".
+- Banner "Cluster \<name\> hasn't pinged in Xm".
 - Troubleshooting steps (kubectl get pods, restart agent).
-- Last seen timestamp.
+- `lastHeartbeat` affiché.
 
 ## 3. Règles métier
-- **RM210** — `last_heartbeat > 2 min` → état warning.
-- **RM211** — `> 10 min` → état critical + email admin.
+- **RM210** — `lastHeartbeat > 2 min` → état warning.
+- **RM211** — `> 10 min` → état critical + email admin : **[NON IMPLÉMENTÉ]** (email automatique).
 
 ---
 
@@ -954,35 +1385,20 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/notifications`
-- **Rôle** : Centre de notifications in-app.
 
-## 2. Composants
-- Liste notifications (incidents, mentions, system).
-- Mark all as read.
-- Filtres.
-
-## 3. APIs
-- `GET /api/notifications?unread=true`
-- `POST /api/notifications/mark-read` payload `{ ids: [...] }`
+> **[NON IMPLÉMENTÉ]** — Les notifications in-app (centre de notifications, mark as read)
+> ne sont pas implémentées. Les notifications externes (Slack, email, etc.) sont envoyées
+> par le backend via Dramatiq mais ne sont pas listables depuis l'API.
 
 ---
 
 # 23 · Command palette ⌘K
 
 ## 1. Vue d'ensemble
-- Overlay global, déclenché par `⌘K` ou `Ctrl+K`.
-- **Rôle** : Navigation + actions rapides.
+- Overlay global, déclenché par `⌘K` / `Ctrl+K`.
 
-## 2. Composants
-- Input search.
-- Liste résultats catégorisés : Pods, Services, Incidents, Actions, Settings.
-- Keyboard nav (↑↓ Enter Esc).
-
-## 3. APIs
-- `GET /api/search?q=auth&types=pod,service,incident&limit=10`
-
-## 4. Règles métier
-- **RM230** — Résultats triés par fréquence d'accès personnelle, puis recency.
+> **[NON IMPLÉMENTÉ]** — Pas d'endpoint de recherche globale. Implémenter côté frontend
+> uniquement sur les données déjà chargées (clusters, analyses récentes) avec filtrage local.
 
 ---
 
@@ -990,16 +1406,16 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/settings`, `/settings/notifications`
-- **Rôle** : Hub de configuration workspace.
 
 ## 2. Composants Overview
 - Liste sections : Workspace & team, Notifications, Memory, Billing, Security, API keys.
-- Aperçu par section.
 
 ## 3. Composants Notifications
-- Channels list (réutilise onboarding step 5).
-- Règles d'alerte (réutilise).
-- Quiet hours.
+- Channels (réutilise `connectChannel` / `disconnectChannel`).
+- Règles d'alerte (réutilise `createAlertRule` / `toggleAlertRule`).
+- Quiet hours (réutilise `setQuietHours`).
+
+Voir les mutations détaillées en section 08.
 
 ---
 
@@ -1010,20 +1426,45 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 - **Rôle** : Gérer membres + invitations + rôles.
 
 ## 2. Composants
-- Table membres (avatar, name, email, role, last active).
-- Bouton "Invite member" → modal.
-- Section pending invites.
-- Bulk actions (change role, remove).
 
-## 3. APIs
-- `GET /api/members`
-- `PATCH /api/members/:id` `{ role: "admin" }`
-- `DELETE /api/members/:id`
-- `POST /api/invitations` (déjà couvert)
+| Composant | Source |
+|-----------|--------|
+| Table membres | **[NON IMPLÉMENTÉ]** — pas de query `listMembers` |
+| Invitations pending | `listInvitations(workspaceId, status: "pending")` |
+| Bouton "Invite member" | `inviteMember` |
+| Révoquer invitation | `revokeInvitation` |
+| Modifier rôle / retirer membre | **[NON IMPLÉMENTÉ]** |
+
+## 3. APIs disponibles
+
+```graphql
+query ListInvitations($workspaceId: ID!) {
+  listInvitations(workspaceId: $workspaceId) {
+    id
+    email
+    role
+    status
+    expiresAt
+    createdAt
+  }
+}
+```
+
+```graphql
+mutation InviteMember($workspaceId: ID!, $email: String!, $role: String) {
+  inviteMember(workspaceId: $workspaceId, email: $email, role: $role) {
+    id
+    email
+    role
+    status
+    expiresAt
+  }
+}
+```
 
 ## 4. Règles métier
-- **RM260** — Un workspace doit avoir ≥ 1 admin actif.
-- **RM261** — On ne peut pas se retirer soi-même si on est le seul admin.
+- **RM260** — 1 admin minimum par workspace : **[NON IMPLÉMENTÉ]** côté backend (à valider côté front).
+- **RM261** — Changement de rôle / suppression de membre : **[NON IMPLÉMENTÉ]**.
 
 ---
 
@@ -1031,17 +1472,9 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/settings/memory`
-- **Rôle** : Tuner sensibilité du moteur de mémoire.
 
-## 2. Composants
-- Slider sensitivity (0–100).
-- Slider min confidence to surface (0–100).
-- Slider expiry days.
-- Pattern blacklist input.
-
-## 3. APIs
-- `GET /api/workspaces/:id/memory-config`
-- `PATCH /api/workspaces/:id/memory-config` payload `{ sensitivity: 70, min_confidence: 50, expiry_days: 90, blacklist: [...] }`
+> **[NON IMPLÉMENTÉ]** — Configuration du moteur de mémoire (sensibilité, expiry, blacklist)
+> non exposée par l'API. Le moteur tourne avec ses paramètres par défaut.
 
 ---
 
@@ -1049,23 +1482,9 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/settings/billing`
-- **Rôle** : Plan actuel, payment method, factures, usage.
 
-## 2. Composants
-- Plan card (current plan, next bill date, amount).
-- Bouton "Change plan".
-- Payment method (Stripe Elements).
-- Liste factures (`GET /api/invoices`).
-- Usage meter (clusters / pods).
-
-## 3. APIs
-- `GET /api/billing/subscription`
-- `POST /api/billing/portal` → URL Stripe Customer Portal.
-- `GET /api/invoices` paginated.
-
-## 4. Règles métier
-- **RM280** — Admin uniquement.
-- **RM281** — Cancel = downgrade au prochain cycle, pas immédiat.
+> **[NON IMPLÉMENTÉ]** — Aucune intégration Stripe ni gestion de subscription.
+> Le champ `plan` du workspace est une string stockée localement (pas de paiement).
 
 ---
 
@@ -1073,46 +1492,41 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/settings/security`
-- **Rôle** : Configurer SSO SAML/OIDC, force SSO, sessions.
 
-## 2. Composants
-- SAML config (Entity ID, ACS URL, IdP metadata upload).
-- Toggle "Force SSO for all members".
-- Liste sessions actives (`GET /api/sessions`).
-- Audit log link.
-- 2FA enforcement toggle.
-
-## 3. APIs
-- `GET/POST /api/sso/saml`
-- `PATCH /api/workspaces/:id/security` payload `{ force_sso, require_2fa, session_timeout_min }`
-
-## 4. Règles métier
-- **RM290** — Pro plan minimum pour SAML.
-- **RM291** — Enterprise pour SCIM provisioning.
+> **[NON IMPLÉMENTÉ]** — SSO SAML/OIDC, force SSO, sessions actives, 2FA, audit log :
+> non implémentés.
 
 ---
 
 # 30 · Create API key (modal)
 
 ## 1. Vue d'ensemble
-- Modal overlay sur `/settings/api-keys` ou `/cicd`.
-- **Rôle** : Créer une nouvelle API key.
+- Overlay sur `/settings/api-keys` ou `/cicd`.
 
 ## 2. Composants
 - Input name.
-- Scopes (checkboxes).
-- Expiration (date picker, max 1 an).
 - Bouton Create.
+- Affichage one-shot de la clé.
+
+> `scopes` et `expires_at` ne sont pas implémentés — retirer ces champs de l'UI ou les
+> afficher comme "coming soon".
 
 ## 3. APIs
-- `POST /api/keys`
-- **Payload** : `{ "name": "github-ci", "scopes": ["read:incidents", "write:predeploy"], "expires_at": "2027-05-18" }`
-- **Réponse 201** : `{ "data": { "id": "ak_...", "name": "...", "token": "podiq_live_abc...", "scopes": [...] } }`
-- **IMPORTANT** : `token` retourné une seule fois.
+
+```graphql
+mutation CreateApiKey($name: String!) {
+  createApiKey(name: $name) {
+    keyId
+    rawKey    # afficher UNE SEULE FOIS, ne pas stocker
+    name
+    createdAt
+  }
+}
+```
 
 ## 4. Règles métier
-- **RM300** — Token jamais re-affiché. Hash stocké backend.
-- **RM301** — Limite : 20 keys / workspace.
+- **RM300** — `rawKey` non re-affichable. Hash stocké backend.
+- **RM301** — Limite de 20 keys/workspace : **[NON IMPLÉMENTÉ]** côté backend.
 
 ---
 
@@ -1120,17 +1534,8 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/incidents/:id/pr-preview`
-- **Rôle** : Prévisualiser le diff avant de créer la PR GitHub.
 
-## 2. Composants
-- Diff viewer (before/after YAML).
-- Commit message éditable.
-- Repository + branch picker.
-- Bouton "Open PR" / "Copy patch".
-
-## 3. APIs
-- `GET /api/incidents/:id/fix/preview`
-- `POST /api/incidents/:id/fix/pr` payload `{ repo, branch, commit_message }`
+> **[NON IMPLÉMENTÉ]** — Création de PR GitHub non implémentée.
 
 ---
 
@@ -1138,14 +1543,8 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/pods/:name/activity`
-- **Rôle** : Heatmap / timeline détaillée des events sur 24h.
 
-## 2. Composants
-- Heatmap par heure × type d'event.
-- Liste filtrée events.
-
-## 3. APIs
-- `GET /api/pods/:name/activity?range=24h&granularity=hour`
+> **[NON IMPLÉMENTÉ]** — Heatmap / timeline d'events non disponible via l'API.
 
 ---
 
@@ -1153,16 +1552,8 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/incidents/:id/postmortem`
-- **Rôle** : Document postmortem auto-généré à partir de la timeline + diagnostic.
 
-## 2. Composants
-- Markdown rendered.
-- Sections : Summary, Timeline, Root cause, Resolution, Action items.
-- Bouton "Export PDF", "Copy markdown".
-
-## 3. APIs
-- `GET /api/incidents/:id/postmortem`
-- `POST /api/incidents/:id/postmortem/regenerate`
+> **[NON IMPLÉMENTÉ]** — Génération de postmortem non disponible.
 
 ---
 
@@ -1170,24 +1561,16 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 
 ## 1. Vue d'ensemble
 - **Route** : `/help`
-- **Rôle** : Centre d'aide in-app (docs, FAQs, contact support).
 
-## 2. Composants
-- Search docs.
-- Liens vers articles.
-- Bouton "Contact support" → ticket.
-
-## 3. APIs
-- `GET /api/help/search?q=...`
-- `POST /api/help/tickets` payload `{ subject, body, attachments }`
+> **[NON IMPLÉMENTÉ]** — Pas d'API de recherche docs ni de système de tickets.
 
 ---
 
 # 35 · Mobile alerts (iOS) — [HORS SCOPE WEB]
 
-Écran natif iOS. Spec mobile séparée. Le backend doit exposer :
-- Push notifications via APNs.
-- Endpoint device registration : `POST /api/devices` `{ platform: "ios", token: "..." }`.
+Écran natif iOS. Spec mobile séparée.
+
+> **[NON IMPLÉMENTÉ]** — Push notifications APNs et device registration non implémentés.
 
 ---
 
@@ -1197,45 +1580,193 @@ Then le KPI "Healthy pods" affiche "298 / 312"
 - Overlay sur première visite anonyme.
 - **Rôle** : Conformité RGPD / CCPA.
 
-## 2. Composants
-- Banner bottom.
-- Boutons : Accept all, Reject non-essential, Customize.
-- Modal préférences (cookie categories).
+## 2. Implémentation
+- Géré entièrement côté frontend (localStorage / cookie consent 1 an).
+- Pas d'API backend dédiée.
 
-## 3. Données
-- `POST /api/consent` payload `{ analytics: true, marketing: false, functional: true }` → cookie 1 an.
-
-## 4. Règles métier
+## 3. Règles métier
 - **RM360** — Visiteurs EU : opt-in explicite obligatoire pour analytics/marketing.
 - **RM361** — Cookie consent expire 12 mois.
 
 ---
 
-## Annexe — Glossaire
+## Annexe A — Récapitulatif des opérations GraphQL implémentées
 
-| Terme | Définition |
-|-------|------------|
-| Workspace | Unité d'isolation tenant. 1 user peut appartenir à plusieurs. |
-| Cluster | Cluster Kubernetes connecté via l'agent PodIQ. |
-| Pod | Unité K8s, watched par l'agent. |
-| Service | Regroupement logique de pods (typiquement un Deployment). |
-| Memory pattern | Empreinte d'un incident passé, réutilisée pour diagnostics futurs. |
-| Confidence | Score 0-100 de probabilité que la root cause proposée soit correcte. |
-| Blast radius | Ensemble des services affectés par cascade. |
-| Heartbeat | Ping périodique de l'agent au backend (toutes les 30s). |
+### Mutations
+
+| Opération | Paramètres | Retour | Auth requise |
+|-----------|-----------|--------|--------------|
+| `register` | `email`, `password` | `AuthPayload` | Non |
+| `login` | `email`, `password` | `AuthPayload` | Non |
+| `createApiKey` | `name` | `ApiKeyPayload` | user-JWT |
+| `revokeApiKey` | `keyId` | `Boolean` | workspace-JWT |
+| `createWorkspace` | `name`, `region?`, `teamSize?`, `accentColor?` | `WorkspaceType` | user-JWT |
+| `selectWorkspace` | `workspaceId` | `WorkspaceAuthPayload` | user-JWT |
+| `refreshToken` | — | `WorkspaceAuthPayload` | cookie refresh |
+| `updateWorkspace` | `workspaceId`, `name?`, `accentColor?`, `teamSize?` | `WorkspaceType` | workspace-JWT admin |
+| `analyzeIncident` | `podName`, `namespace`, `logs?`, `events?`, `describeOutput?` | `AnalysisJobType` | workspace-JWT |
+| `scanManifest` | `yamlContent`, `manifestType?` | `ManifestScanResultType` | workspace-JWT |
+| `generateInstallToken` | `workspaceId` | `InstallTokenPayload` | workspace-JWT admin |
+| `agentHeartbeat` | (usage agent uniquement) | — | install token |
+| `agentReportIncident` | (usage agent uniquement) | — | install token |
+| `inviteMember` | `workspaceId`, `email`, `role?` | `InvitationPayload` | workspace-JWT admin |
+| `revokeInvitation` | `invitationId` | `Boolean` | workspace-JWT admin |
+| `acceptInvitation` | `token` | `WorkspaceAuthPayload` | user-JWT |
+| `generateInviteLink` | `workspaceId` | `InvitationPayload` | workspace-JWT admin |
+| `createAlertRule` | `workspaceId`, `eventType`, `name?` | `AlertRuleType` | workspace-JWT admin |
+| `toggleAlertRule` | `ruleId`, `enabled` | `AlertRuleType` | workspace-JWT admin |
+| `connectChannel` | `workspaceId`, `channelType`, `config` (JSON string) | `ChannelPayload` | workspace-JWT admin |
+| `disconnectChannel` | `channelId` | `Boolean` | workspace-JWT admin |
+| `setQuietHours` | `workspaceId`, `enabled`, `startTime`, `endTime`, `timezone?`, `weekdaysOnly?` | `QuietHoursType` | workspace-JWT admin |
+
+### Queries
+
+| Opération | Paramètres | Retour | Auth requise |
+|-----------|-----------|--------|--------------|
+| `listWorkspaces` | — | `[WorkspaceType]` | user-JWT |
+| `currentWorkspace` | — | `WorkspaceType?` | workspace-JWT |
+| `clusterStatus` | `workspaceId` | `[ClusterType]` | workspace-JWT |
+| `analysisJob` | `jobId` | `AnalysisJobType` | workspace-JWT |
+| `analysisHistory` | `podName`, `namespace`, `limit?`, `analysisType?` | `[AnalysisHistoryItem]` | workspace-JWT |
+| `listInvitations` | `workspaceId`, `status?` | `[InvitationPayload]` | workspace-JWT admin |
+
+### Subscriptions (WebSocket `graphql-ws`)
+
+| Opération | Paramètres | Retour | Auth requise |
+|-----------|-----------|--------|--------------|
+| `clusterConnected` | `workspaceId` | `ClusterType` (stream) | workspace-JWT |
+| `jobStatus` | `jobId` | `AnalysisJobType` (stream) | workspace-JWT |
+
+### REST
+
+| Endpoint | Auth | Usage |
+|----------|------|-------|
+| `POST /api/v1/cicd/scan` | `X-Api-Key: <rawKey>` | Scanner un YAML depuis un pipeline CI/CD |
+| `GET /healthz` | Aucune | Healthcheck |
 
 ---
 
-## Annexe — Tags à clarifier
+## Annexe B — Types GraphQL
 
-Recherche `[AMBIGUÏTÉ]` et `[À CONFIRMER]` dans ce document.
+```typescript
+// AuthPayload — retourné par register + login
+{ token: string; userId: string; email: string }
 
-| Tag | Section | Question |
-|-----|---------|----------|
-| [AMBIGUÏTÉ] | 02 Login | Stats live workspace public ou décor ? |
-| [AMBIGUÏTÉ] | 17 Pod detail | Restart pod compatible avec agent read-only ? |
-| [À CONFIRMER] | 27 Memory tuning | Sensibilité globale workspace ou per-service ? |
-| [À CONFIRMER] | 32 Pod activity | Granularité min = heure ou minute ? |
+// WorkspaceAuthPayload — retourné par selectWorkspace + refreshToken + acceptInvitation
+{ token: string; userId: string; email: string; workspaceId: string; role: string }
+
+// WorkspaceType
+{
+  id: string; name: string; slug: string; plan: string; role: string;
+  region: string; teamSize: string; accentColor: string;
+  onboardedAt: string | null; createdAt: string
+}
+
+// ClusterType
+{
+  id: string; name: string; k8sVersion: string; status: string;
+  workspaceId: string; lastHeartbeat: string | null; createdAt: string
+}
+
+// AnalysisJobType
+{
+  jobId: ID; status: string; error: string | null; createdAt: string;
+  result: AnalysisResultType | null
+}
+
+// AnalysisResultType
+{
+  errorType: string; rootCause: string; explanation: string;
+  solution: string; confidence: string; isRecurring: boolean;
+  recurrenceCount: number; correlatedService: string | null;
+  correlationExplanation: string | null
+}
+
+// AnalysisHistoryItem
+{
+  id: string; podName: string; namespace: string; errorType: string;
+  rootCause: string; solution: string; confidence: string;
+  isRecurring: boolean; recurrenceCount: number;
+  createdAt: string; analysisType: string; riskLevel: string
+}
+
+// ManifestScanResultType
+{
+  riskLevel: string;  // "low" | "medium" | "high" | "critical"
+  summary: string;
+  risks: Array<{ severity: string; category: string; description: string; fix: string }>
+}
+
+// ApiKeyPayload
+{ keyId: string; rawKey: string; name: string; createdAt: string }
+
+// InstallTokenPayload
+{ token: string; workspaceId: string; expiresAt: string }
+
+// InvitationPayload
+{
+  id: string; token: string; email: string; role: string;
+  status: string; expiresAt: string; createdAt: string
+}
+
+// AlertRuleType
+{ id: string; workspaceId: string; name: string; eventType: string; enabled: boolean; createdAt: string }
+
+// ChannelPayload
+{ id: string; workspaceId: string; type: string; enabled: boolean; createdAt: string }
+
+// QuietHoursType
+{
+  id: string; workspaceId: string; enabled: boolean;
+  startTime: string; endTime: string; timezone: string; weekdaysOnly: boolean
+}
+```
+
+---
+
+## Annexe C — Fonctionnalités [NON IMPLÉMENTÉ] — Roadmap backend
+
+| Fonctionnalité | Écrans concernés | Complexité estimée |
+|----------------|------------------|--------------------|
+| SSO (Google, GitHub, SAML) | 02, 29 | Haute |
+| Vérification email | 03 | Moyenne |
+| Billing / Stripe | 05, 28 | Haute |
+| Slug check endpoint | 04 | Faible |
+| Upload icon workspace | 04 | Faible |
+| Query listMembers | 26 | Faible |
+| Changement rôle / remove member | 26 | Faible |
+| Incident lifecycle (ack, dismiss) | 11, 16 | Moyenne |
+| Query incidents globale (workspace) | 10, 16 | Faible |
+| Apply fix / PR GitHub | 11, 31 | Haute |
+| Métriques cluster (KPIs, timeseries) | 10, 17, 18, 19 | Haute |
+| API services + namespaces + nodes | 18, 19 | Moyenne |
+| Notifications inbox (in-app) | 22 | Moyenne |
+| Recherche globale (⌘K) | 23 | Moyenne |
+| Memory tuning config | 27 | Faible |
+| Postmortem | 33 | Moyenne |
+| Pod activity timeline | 32 | Moyenne |
+| Push notifications iOS | 35 | Haute |
+| Query listAlertRules | 08, 24 | Faible |
+| Query listChannels | 08, 24 | Faible |
+| Rate limiting login | 02 | Faible |
+
+---
+
+## Annexe D — Glossaire
+
+| Terme | Définition |
+|-------|------------|
+| user-JWT | Token signé par auth-service, ne contient pas de workspace_id. Durée courte. |
+| workspace-JWT | Token signé par gateway, contient workspace_id + role. Durée configurable (défaut 60 min). |
+| refresh_token | Cookie httpOnly signé par gateway. Durée 30 jours. Rotation à chaque appel refreshToken. |
+| Workspace | Unité d'isolation tenant. 1 user peut appartenir à plusieurs. |
+| Cluster | Cluster Kubernetes connecté via l'agent PodIQ. |
+| Pod | Unité K8s trackée par l'agent. |
+| AnalysisJob | Job d'analyse async créé par `analyzeIncident`. Suivi via `analysisJob` ou `jobStatus`. |
+| Memory pattern | Détection de récurrence : `isRecurring=true` + `recurrenceCount` dans `AnalysisResultType`. |
+| Confidence | Score textuel (ex. "high", "medium", "low") retourné par le LLM. |
+| Heartbeat | Ping périodique de l'agent (toutes les 30s) via `agentHeartbeat`. |
+| install_token | Token `wsk_xxx` généré par `generateInstallToken`, utilisé par l'agent pour s'identifier. |
 
 ---
 
