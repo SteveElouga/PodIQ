@@ -33,42 +33,64 @@ class TestRequireAuth:
     def test_raises_when_info_is_none(self):
         from app.auth import require_auth
 
-        with pytest.raises(PermissionError):
+        with pytest.raises(GraphQLError) as exc_info:
             require_auth(None)
+        assert (
+            exc_info.value.extensions[GRAPHQL_EXTENSION_CODE] == ErrorCode.TOKEN_MISSING
+        )
 
     def test_raises_when_no_authorization_header(self):
         from app.auth import require_auth
 
-        with pytest.raises(PermissionError):
+        with pytest.raises(GraphQLError) as exc_info:
             require_auth(make_info())
+        assert (
+            exc_info.value.extensions[GRAPHQL_EXTENSION_CODE] == ErrorCode.TOKEN_MISSING
+        )
 
     def test_raises_when_scheme_is_not_bearer(self):
         from app.auth import require_auth
 
-        with pytest.raises(PermissionError):
+        with pytest.raises(GraphQLError) as exc_info:
             require_auth(make_info("Basic dXNlcjpwYXNz"))
+        assert (
+            exc_info.value.extensions[GRAPHQL_EXTENSION_CODE] == ErrorCode.TOKEN_MISSING
+        )
 
     def test_raises_when_token_is_empty_after_bearer(self):
         from app.auth import require_auth
 
-        with pytest.raises(PermissionError):
+        with pytest.raises(GraphQLError) as exc_info:
             require_auth(make_info("Bearer "))
+        assert (
+            exc_info.value.extensions[GRAPHQL_EXTENSION_CODE] == ErrorCode.TOKEN_MISSING
+        )
 
     def test_raises_when_jwt_is_invalid(self):
         response = make_jwt_response(valid=False, error="Token expired")
         with patch("app.auth.auth_client.validate_jwt", return_value=response):
             from app.auth import require_auth
 
-            with pytest.raises(PermissionError, match="Token expired"):
+            with pytest.raises(GraphQLError, match="Token expired") as exc_info:
                 require_auth(make_info("Bearer expired-token"))
+            assert (
+                exc_info.value.extensions[GRAPHQL_EXTENSION_CODE]
+                == ErrorCode.TOKEN_INVALID
+            )
 
     def test_raises_with_fallback_message_when_error_is_empty(self):
         response = make_jwt_response(valid=False, error="")
         with patch("app.auth.auth_client.validate_jwt", return_value=response):
             from app.auth import require_auth
 
-            with pytest.raises(PermissionError, match="Invalid or expired token"):
+            with pytest.raises(
+                GraphQLError, match="Invalid or expired token"
+            ) as exc_info:
                 require_auth(make_info("Bearer bad-token"))
+            assert (
+                exc_info.value.extensions[GRAPHQL_EXTENSION_CODE]
+                == ErrorCode.TOKEN_INVALID
+            )
 
     def test_returns_user_id_when_token_is_valid(self):
         response = make_jwt_response(valid=True, user_id="user-uuid-42")
@@ -76,7 +98,7 @@ class TestRequireAuth:
             from app.auth import require_auth
 
             result = require_auth(make_info("Bearer valid-token"))
-        assert result == "user-uuid-42"
+        assert result.user_id == "user-uuid-42"
 
     def test_raises_graphql_when_validate_jwt_grpc_fails(self):
         err = FakeRpcError(grpc.StatusCode.UNAVAILABLE, "")

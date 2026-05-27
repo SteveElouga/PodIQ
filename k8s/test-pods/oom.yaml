@@ -1,0 +1,23 @@
+# Pod that exhausts its memory limit → OOMKilled
+# memory limit intentionally very low (8Mi) so the allocator hits it immediately.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: podiq-test-oom
+  namespace: default
+  labels:
+    podiq-test: "true"
+    scenario: oom
+spec:
+  restartPolicy: Always
+  containers:
+    - name: oom-trigger
+      image: polinux/stress:latest
+      command: ["stress", "--vm", "1", "--vm-bytes", "128M", "--vm-hang", "0"]
+      resources:
+        requests:
+          memory: "8Mi"
+          cpu: "50m"
+        limits:
+          memory: "8Mi"
+          cpu: "100m"

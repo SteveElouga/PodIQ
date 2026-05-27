@@ -18,6 +18,7 @@ message IncidentRequest {
   string              events            = 5;
   repeated PastIncident history         = 6;  // Memory Engine — 5 derniers incidents
   repeated PodContext namespace_context = 7;  // Corrélation temporelle
+  string              workspace_id      = 8;  // Tenant isolation (UUID gateway workspace)
 }
 
 message PastIncident {
@@ -57,6 +58,7 @@ message ManifestScanRequest {
   string              manifest_name    = 4;  // metadata.name du manifest
   string              manifest_namespace = 5;  // metadata.namespace du manifest
   string              manifest_type    = 6;  // kind: Deployment | StatefulSet | ...
+  string              workspace_id     = 7;  // Tenant isolation (UUID gateway workspace)
 }
 
 message ManifestScanResult {
@@ -79,6 +81,7 @@ message HistoryRequest {
   string namespace     = 2;
   int32  limit         = 3;  // défaut 10
   string analysis_type = 4;  // "" = tous | "incident" | "predeploy"
+  string workspace_id  = 5;  // Tenant isolation — filtre les résultats par workspace
 }
 
 message HistoryItem {

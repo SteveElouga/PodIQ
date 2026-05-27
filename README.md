@@ -61,27 +61,25 @@ curl http://localhost:8080/healthz
 # → {"status": "ok"}
 ```
 
-### Tester l'analyse d'incident (sans cluster Kubernetes)
+### Tester avec l'agent (cluster réel ou simulation)
 
-`STUB_MODE=true` dans `.env` fait tourner l'analyzer en mode bouchon : il simule un pod en `CrashLoopBackOff` avec des logs fictifs, sans toucher à Kubernetes.
+L'agent PodIQ tourne dans le cluster et envoie les données au gateway via GraphQL. Pour tester sans déployer de vrai agent, utiliser le script de simulation :
 
 ```bash
-# 1. Créer un compte
-curl -s -X POST http://localhost:8080/graphql \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"mutation { register(email: \"demo@podiq.io\", password: \"pass1234\") { token } }"}' \
-  | python3 -m json.tool
+# 1. Créer un compte + workspace
+# → http://localhost:8080/graphql (playground)
+# mutation { register(email: "demo@podiq.io", password: "pass1234") { token } }  # pragma: allowlist secret
+# mutation { createWorkspace(name: "Demo") { id } }
+# mutation { selectWorkspace(workspaceId: "...") { token } }  ← workspace-JWT
 
-# 2. Copier le token puis analyser un pod
-TOKEN="<token_obtenu_ci-dessus>"
-curl -s -X POST http://localhost:8080/graphql \
-  -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $TOKEN" \
-  -d '{"query":"mutation { analyzeIncident(podName: \"test\", namespace: \"default\") { errorType rootCause solution confidence correlatedService correlationExplanation } }"}' \
-  | python3 -m json.tool
+# 2. Générer un install token
+# mutation { generateInstallToken(workspaceId: "...") { token } }  ← wsk_xxx
+
+# 3. Simuler un incident complet avec le script agent
+./scripts/agent_simulate.sh wsk_xxx <pod_name> <namespace> <workspace_jwt>
 ```
 
-**Résultat attendu :** un objet JSON avec `errorType`, `rootCause`, `solution`, `confidence`, et si un pod voisin est en erreur dans la fenêtre de 15 min : `correlatedService` + `correlationExplanation`.
+Le script collecte les données du cluster via kubectl, envoie heartbeat + incident, et poll jusqu'à `complete`. Le workspace-JWT (4e argument) doit commencer par `eyJ`.
 
 ### Playground GraphQL interactif
 
@@ -197,15 +195,9 @@ PodIQ n'est pas un wrapper IA sur `kubectl`. C'est une plateforme qui :
 
 **Ce que PodIQ fait :**
 
-- Collecte l'état de tous les pods du namespace à chaque analyse
-- Détecte les causalités temporelles (fenêtre configurable, par défaut 15 min)
-- Affiche : *"postgres-service was OOMKilled 6 minutes before this crash."*
-
-**Comment ça marche en détail :**
-
-1. L'analyzer scanne **tous les pods** du namespace au moment de l'incident et retourne leur statut, leurs erreurs, et leur dernier `restart_time`.
-2. Le gateway construit le **`namespace_context`** : il retire le pod analysé de la liste, puis pour chaque voisin, calcule si son dernier restart tombe **dans la fenêtre de 15 minutes** avant l'incident. Chaque pod reçoit un flag `in_correlation_window`, un champ `seconds_before_reference`, et son statut.
-3. Ce contexte enrichi est transmis à l'AI Service dans le prompt. Le modèle peut alors distinguer une panne **isolée** d'une **dégradation simultanée** dans le namespace et proposer un `correlated_service` avec une `correlation_explanation`.
+- L'**agent** collecte l'état de tous les pods du namespace au moment de l'incident et les envoie dans `namespace_pods` JSON via `agentReportIncident`
+- Le gateway construit le **`namespace_context`** : il retire le pod analysé de la liste, puis pour chaque voisin, calcule si son dernier restart tombe **dans la fenêtre de 15 minutes** avant l'incident. Chaque pod reçoit un flag `in_correlation_window`, un champ `seconds_before_reference`, et son statut.
+- Ce contexte enrichi est transmis à l'AI Service dans le prompt. Le modèle peut alors distinguer une panne **isolée** d'une **dégradation simultanée** dans le namespace et proposer un `correlated_service` avec une `correlation_explanation`.
 
 **Résultat attendu dans la réponse GraphQL :**
 ```json
@@ -220,9 +212,8 @@ Si aucun voisin n'est dans la fenêtre : `correlatedService: null`, `correlation
 
 **Implémentation :**
 
-- `collectors/namespace_scan.py` dans `analyzer-service`
-- `app/namespace_correlation.py` dans `gateway` (`build_namespace_context`)
-- Table `namespace_snapshots` PostgreSQL (analyzer-service)
+- `scripts/agent_simulate.sh` (collecte kubectl → `namespace_pods` JSON)
+- `_build_namespace_context()` dans `gateway/app/tasks.py`
 - Prompt incident (`namespace_context` section) dans `ai-service`
 
 ---
@@ -274,22 +265,23 @@ podiq scan manifest <path/to/deployment.yaml>
 ### Vue globale
 
 ```
-[Frontend Angular / CLI]
-         ↓ GraphQL + REST (CI/CD)
-  [API Gateway Django]       [postgres-gateway]
-         ↓ gRPC
-   ┌─────┼───────────────────┐
-   ↓     ↓                   ↓
-[Analyzer]  [AI Service]  [Auth Service]
-  Service    Ollama          JWT
- kubectl     Memory          API Keys
- YAML        Correlator
-   │              │               │
-[postgres-  [postgres-      [postgres-
- analyzer]    ai]             auth]
+[K8s Cluster]                    [PodIQ SaaS]
+  PodIQ Agent ──HTTPS GraphQL──▶ API Gateway (Django ASGI)
+  (pod in cluster)                     ↓ gRPC
+  collecte: logs/events/describe  ┌────┼──────────┐
+  envoie: agentReportIncident     ↓    ↓          ↓
+                             [Analyzer] [AI Svc] [Auth]
+[Frontend Angular / CLI]       YAML       Ollama   JWT
+  ↓ GraphQL + REST (CI/CD)    Parser     Memory   API Keys
+  ↓ WebSocket (subscriptions)  only      Engine
+                                │          │         │
+                           [postgres- [postgres- [postgres-
+                            analyzer]   ai]        auth]
+
+[postgres-gateway] ← Gateway sessions, workspaces, clusters
 
   Redis (Dramatiq queue + cache)
-  Promtail → Loki → Grafana
+  Loki Log Driver → Loki → Grafana
 ```
 
 **Principe fondamental :** chaque service est un microservice **entièrement indépendant**.
@@ -302,56 +294,24 @@ podiq scan manifest <path/to/deployment.yaml>
 ### Diagramme microservices
 
 ```
-                ┌─────────────────┐
-                │   Frontend      │
-                │   Angular       │
-                └────────┬────────┘
-                         │ GraphQL (HTTP/WS)
-                    ┌────▼────┐
-                    │  Nginx  │
-                    └────┬────┘
-                         │
-                ┌────────▼──────────────┐
-                │      API Gateway      │
-                │  Django + Strawberry  │
-                │  + REST /api/v1/      │
-                └───┬──────────┬────────┘
-                    │          │
-              ┌─────┘    ┌─────┘
-              │ gRPC      │ gRPC          gRPC
-              ▼           ▼               ▼
-┌─────────────────┐ ┌──────────────┐ ┌──────────────┐
-│   AI Service    │ │   Analyzer   │ │    Auth      │
-│  Ollama client  │ │   Service    │ │   Service    │
-│  Memory Engine  │ │ kubectl/k8s  │ │  JWT         │
-│  Correlator     │ │ YAML Parser  │ │  API Keys    │
-│  Django ORM     │ │ Django ORM   │ │  Django ORM  │
-└────────┬────────┘ └──────┬───────┘ └──────┬───────┘
-         │                 │                 │
-         ▼                 ▼                 ▼
-  [postgres-ai]   [postgres-analyzer]  [postgres-auth]
-  analyses         logs_snapshots       users
-  incident_        namespace_           api_keys
-  patterns         snapshots
+[K8s Cluster]                    [PodIQ SaaS]
+  PodIQ Agent ──HTTPS GraphQL──▶ API Gateway (Django ASGI)
+  (pod in cluster)                    + REST /api/v1/cicd/scan
+  collecte: logs/events/describe      ↓ gRPC
+  envoie: agentReportIncident    ┌────┼──────────────┐
+                                 ▼    ▼              ▼
+[Frontend Angular / CLI]   ┌──────────────┐ ┌──────────┐ ┌──────────┐
+  ↓ GraphQL + WebSocket    │  AI Service  │ │ Analyzer │ │  Auth    │
+  ↓ REST (CI/CD)           │  Ollama      │ │  Service │ │  Service │
+                           │  Memory Eng. │ │  YAML    │ │  JWT     │
+                           │  Django ORM  │ │  Parser  │ │  API Keys│
+                           └──────┬───────┘ └────┬─────┘ └────┬─────┘
+                                  ▼              ▼              ▼
+                            [postgres-ai] [postgres-  [postgres-auth]
+                                          analyzer]
 
-[API Gateway Django ORM]──▶[postgres-gateway]
- (sessions Django uniquement)
-
-┌────────────────┐
-│    Ollama      │
-│    mistral     │
-│   (mistral)    │
-└────────────────┘
-
-┌────────────────┐
-│  Redis Queue   │
-│  (Dramatiq)    │
-└────────────────┘
-
-        Observabilité
-┌─────────────────────────────────────┐
-│  Promtail → Loki → Grafana          │
-└─────────────────────────────────────┘
+[postgres-gateway] ← workspaces, clusters, analysis_jobs, invitations...
+Redis (Dramatiq queue) — Loki Log Driver → Loki → Grafana
 ```
 
 ---
@@ -381,14 +341,9 @@ podiq/
 │   │
 │   ├── analyzer-service/
 │   │   ├── app/
-│   │   │   ├── collectors/
-│   │   │   │   ├── pod_logs.py
-│   │   │   │   ├── pod_events.py
-│   │   │   │   └── namespace_scan.py  # différenciant #3
 │   │   │   ├── parsers/
-│   │   │   │   ├── log_cleaner.py
 │   │   │   │   └── yaml_parser.py     # différenciant #2
-│   │   │   └── grpc_server.py
+│   │   │   └── grpc_server.py         # ParseManifest only
 │   │   ├── Dockerfile
 │   │   └── requirements.txt
 │   │
@@ -425,7 +380,7 @@ podiq/
 │   ├── nginx/nginx.conf
 │   ├── grafana/dashboards/podiq-overview.json
 │   ├── loki/loki-config.yml
-│   └── promtail/promtail-config.yml
+│   └── promtail/Dockerfile.k8s-reference  # config K8s production (référence)
 │
 ├── shared/
 │   ├── utils/
@@ -478,20 +433,18 @@ podiq/
 
 ### 8.2 Analyzer Service
 
-> **Analogie :** Le **technicien de terrain** de l'hôpital. Quand un patient arrive, il va sur place collecter tous les examens bruts : prise de sang (logs), radio (events), fiche d'entrée (describe). Il récupère aussi l'état de toute la salle de soins (namespace) pour voir si d'autres patients autour ont eu des problèmes récemment. Il **ne diagnostique pas** — il collecte et nettoie.
+> **Analogie :** Le **lecteur de plans** de l'hôpital. Quand un ingénieur lui soumet les plans d'une nouvelle installation (un manifest YAML Kubernetes), il les examine, extrait les informations importantes, et les met en forme pour l'expert en sécurité.
 
-**Rôle :** Interaction exclusive avec Kubernetes + parsing YAML.
+**Rôle :** Parsing YAML uniquement — `ParseManifest` gRPC. La collecte Kubernetes (logs, events, describe) est désormais faite par l'**agent PodIQ** déployé dans le cluster client.
 
 **Base de données :** `postgres-analyzer`: `logs_snapshots`, `namespace_snapshots`
 
 **Responsabilités :**
 
-- Logs pod (max 2000 lignes), events, describe output
-- Scanner l'état de tous les pods du namespace (différenciant #3)
-- Parser un manifest YAML (différenciant #2)
-- Masquer les secrets dans les logs avant transmission
-- Nettoyer et structurer toutes les données
-- Stocker les snapshots dans sa propre base
+- Parser un manifest YAML et en extraire une structure exploitable (différenciant #2)
+- Transmettre la structure au Gateway (qui la passe à l'AI Service)
+
+> **Note :** `CollectPod` et `ScanNamespace` ont été supprimés. La collecte K8s et la corrélation namespace sont désormais assurées par l'agent via `agentReportIncident` + `namespace_pods` JSON.
 
 ---
 
@@ -535,47 +488,14 @@ podiq/
 
 ### proto/analyzer/analyzer.proto
 
+`CollectPod` et `ScanNamespace` ont été supprimés — la collecte K8s est assurée par l'agent. Seul `ParseManifest` reste.
+
 ```protobuf
 syntax = "proto3";
 package analyzer;
 
 service AnalyzerService {
-  rpc CollectPod (PodRequest) returns (PodData);
-  rpc ScanNamespace (NamespaceRequest) returns (NamespaceSnapshot);
   rpc ParseManifest (ManifestRequest) returns (ParsedManifest);
-}
-
-message PodRequest {
-  string pod_name = 1;
-  string namespace = 2;
-  int32 log_lines = 3;
-}
-
-message PodData {
-  string pod_name = 1;
-  string namespace = 2;
-  string status = 3;
-  string logs = 4;
-  string events = 5;
-  string describe_output = 6;
-}
-
-message NamespaceRequest {
-  string namespace = 1;
-  int64 timestamp = 2;
-}
-
-message NamespaceSnapshot {
-  string namespace = 1;
-  repeated PodSummary pods = 2;
-  int64 collected_at = 3;
-}
-
-message PodSummary {
-  string pod_name = 1;
-  string status = 2;
-  bool has_errors = 3;
-  int64 last_restart_time = 4;
 }
 
 message ManifestRequest {
@@ -672,18 +592,17 @@ message RiskItem {
 ### Flux 1 — Analyse d'incident
 
 ```
-1. Utilisateur sélectionne pod + namespace dans Angular
-2. Mutation GraphQL → Gateway
-3. Gateway valide JWT → crée job Dramatiq dans Redis
-4. Worker → Analyzer Service : CollectPod
-5. Worker → Analyzer Service : ScanNamespace
-6. Worker → PostgreSQL : 5 derniers incidents du pod (Memory Engine)
-7. Worker → AI Service : AnalyzeIncident
-   (prompt enrichi avec historique + contexte namespace)
-8. AI Service → Ollama → parse → retourne AnalysisResult
-9. Gateway stocke résultat + namespace_snapshot en PostgreSQL
-10. Gateway upsert incident_patterns
-11. Frontend reçoit le résultat
+1. Agent PodIQ (pod dans le cluster K8s) détecte un incident
+2. Agent collecte logs, events, describe, namespace_pods via kubectl
+3. Agent envoie mutation agentReportIncident → Gateway (HTTPS GraphQL)
+4. Gateway valide installToken → crée job Dramatiq dans Redis
+5. Worker → PostgreSQL : 5 derniers incidents du pod (Memory Engine)
+6. Worker → AI Service : AnalyzeIncident
+   (prompt enrichi avec historique + namespace_context)
+7. AI Service → Ollama → parse → retourne AnalysisResult
+8. Gateway stocke résultat + namespace_snapshot en PostgreSQL
+9. Gateway upsert incident_patterns
+10. Frontend reçoit le résultat via query analysisJob(jobId)
 ```
 
 ### Flux 2 — Pre-deploy Scan
@@ -750,7 +669,7 @@ Application crashes at startup due to missing DATABASE_URL env variable
 | Cache / Queue         | Redis                             | Jobs async, rate limiting, cache API keys                                     |
 | IA locale             | Ollama + mistral                  | Gratuit, Dockerisable, confidentialité logs — configurable via `OLLAMA_MODEL` |
 | Logs centralisés      | Grafana Loki                      | Cohérent avec produit orienté observabilité                                   |
-| Agent logs            | Promtail                          | Lit stdout Docker → Loki ; services PodIQ émettent des lignes **JSON** (`structlog`, fichier commun `shared/podiq_logging/structlog_setup.py`) avec `timestamp`, `level`, `service`, `event` pour filtres Grafana/Loki |
+| Logs applicatifs      | Loki Docker Log Driver            | Plugin Docker (daemon level) intercepte stdout de chaque conteneur et pousse vers Loki via HTTP — aucun socket Docker exposé. Services émettent du JSON (`structlog`, `shared/podiq_logging/structlog_setup.py`) avec `timestamp`, `level`, `service`, `event`. Rétention 90 j (SOC2 §7.3). |
 | Visualisation         | Grafana                           | Debug rapide + dashboard incidents                                            |
 | Validation            | Pydantic v2                       | Parsing IA, schemas typés                                                     |
 | YAML parsing          | PyYAML                            | Pre-deploy scanner                                                            |
@@ -792,7 +711,6 @@ Django==5.2.1
 psycopg[binary]==3.2.13
 grpcio==1.80.0
 protobuf==6.31.1
-kubernetes==32.0.1
 PyYAML==6.0.2
 python-dotenv==1.1.0
 structlog==25.4.0
@@ -800,6 +718,8 @@ pydantic==2.13.4
 gunicorn==23.0.0
 pytest==8.3.5
 ```
+
+> `kubernetes` a été supprimé depuis phase-16 — la collecte K8s est assurée par l'agent dans le cluster client. Analyzer-service fait du parsing YAML pur (`ParseManifest` only).
 
 ### AI Service
 
@@ -828,6 +748,7 @@ grpcio==1.80.0
 protobuf==6.31.1
 python-dotenv==1.1.0
 structlog==25.4.0
+argon2-cffi==23.1.0
 pytest==8.3.5
 pytest-django==4.11.1
 ```
@@ -863,7 +784,7 @@ Les versions exactes peuvent évoluer ; se référer au fichier **`requirements-
 | ------------------- | ---------------------------------------------- |
 | `gateway`           | API GraphQL + REST CI/CD                       |
 | `auth-service`      | JWT + API Keys                                 |
-| `analyzer-service`  | Collecte K8s + YAML parser + Namespace scan    |
+| `analyzer-service`  | YAML parser uniquement (ParseManifest gRPC)    |
 | `ai-service`        | IA + Memory Engine + Corrélateur               |
 | `postgres-gateway`  | Base dédiée gateway (sessions Django)          |
 | `postgres-auth`     | Base dédiée auth-service (users, api_keys)     |
@@ -872,8 +793,7 @@ Les versions exactes peuvent évoluer ; se référer au fichier **`requirements-
 | `redis`             | Queue async Dramatiq + cache                   |
 | `ollama`            | Modèle IA local Mistral 7B                     |
 | `grafana`           | Visualisation logs + dashboard incidents       |
-| `loki`              | Agrégation logs centralisés                    |
-| `promtail`          | Agent collecte logs Docker                     |
+| `loki`              | Agrégation logs centralisés (rétention 90 j)   |
 | `nginx`             | Reverse proxy                                  |
 
 
@@ -882,7 +802,7 @@ Les versions exactes peuvent évoluer ; se référer au fichier **`requirements-
 ```yaml
 networks:
   backend:       # gateway, services, redis, tous les postgres
-  observability: # grafana, loki, promtail
+  observability: # grafana, loki (Promtail supprimé — Loki Log Driver utilisé)
 
 volumes:
   postgres_gateway_data:
@@ -896,13 +816,19 @@ volumes:
 
 ### Dashboard Grafana PodIQ
 
-Dashboard `podiq-overview.json` configuré pour visualiser :
+Dashboard `podiq-overview.json` — 9 sections, 58 panneaux (Loki) :
 
-- Nombre d'analyses par heure / jour
-- Distribution des `error_type` détectés
-- Top 10 pods les plus incidents (score récurrence)
-- Latence des appels Ollama
-- Score de risque des scans pre-deploy
+| Section | Métriques clés |
+|---------|---------------|
+| Pipeline d'analyse | Jobs démarrés / complétés / échoués, incidents récurrents (Memory Engine) |
+| Santé des services | Erreurs globales, gRPC failures, Ollama timeouts, JWT invalides |
+| Auth & Sécurité | Logins, inscriptions, API Keys, migrations Argon2id, accès refusés |
+| Pre-deploy Scanner | Distribution safe / warning / block |
+| CI/CD Pipeline Gate | Exit codes 0/1/2, déploiements bloqués |
+| Agent K8s | Heartbeats, incidents reportés, install tokens, clusters connectés |
+| Workspaces & Invitations | Workspaces créés, invitations envoyées / acceptées |
+| Notifications | Envois, échecs, suppressions quiet hours |
+| Logs bruts | Volume par service, tous les logs PodIQ |
 
 ### Nginx — Résolution DNS dynamique
 
@@ -923,24 +849,34 @@ Nginx utilise `resolver 127.0.0.11` (DNS interne Docker) avec une variable `$gat
 
 ---
 
-## 13.5 Mode développement sans cluster Kubernetes — STUB_MODE
+## 13.5 Simuler l'agent en développement
 
-Par défaut (`STUB_MODE=false`), l'**analyzer-service** appelle le **vrai cluster Kubernetes** via `kubectl`. En développement local sans cluster, mettre **`STUB_MODE=true`** dans `.env`.
+`STUB_MODE` a été **supprimé** depuis phase-16. La collecte K8s est désormais assurée par l'**agent PodIQ** déployé dans le cluster client — l'analyzer-service ne se connecte plus à Kubernetes.
 
-**Ce que STUB_MODE fait :**
-- `collect_pod()` retourne des **logs et événements fictifs** : un pod en `CrashLoopBackOff`, des erreurs de connexion à Postgres, 7 restarts. Le nom du pod fourni par l'appelant est conservé, le reste est simulé.
-- `scan_namespace()` retourne une **liste fictive de 3 pods** dans le namespace demandé :
-  - `api-gateway-7d9f` — Running, pas d'erreur
-  - `worker-6b8c` — CrashLoopBackOff, `last_restart_time = maintenant − 300s` (dans la fenêtre de corrélation)
-  - `redis-0` — Running, pas d'erreur
+**Pour tester sans déployer de vrai agent :**
 
-**Ce qui reste réel même en STUB_MODE :**
-- Le gateway orchestre toujours tous les appels dans le bon ordre
-- La corrélation namespace est calculée avec les vraies règles (fenêtre, tri, `in_correlation_window`)
-- L'AI Service envoie un **vrai prompt** à **Ollama** et reçoit une vraie réponse du modèle
+```bash
+# 1. Lancer les pods de test dans le cluster (CrashLoopBackOff, OOMKilled, ImagePullBackOff)
+make agent-pods     # kubectl apply -f k8s/test-pods/
+make agent-status   # vérifier l'état des pods de test
+
+# 2. Obtenir un install token (via GraphQL playground)
+# mutation { generateInstallToken(workspaceId: "...") { token } }
+
+# 3. Simuler un incident complet
+./scripts/agent_simulate.sh wsk_xxx podiq-test-crashloop default <workspace-jwt>
+
+# 4. Nettoyer
+make agent-clean
+```
+
+Le script `agent_simulate.sh` collecte les données du cluster via `kubectl`, envoie `agentHeartbeat` + `agentReportIncident` au gateway, puis poll `analysisJob` jusqu'à `complete`.
+
+**Ce qui est réel dans cette simulation :**
+- Le gateway orchestre toujours les appels dans le bon ordre
+- La corrélation namespace est calculée avec les vraies règles (`_build_namespace_context()`, fenêtre `CORRELATION_WINDOW_MINUTES`)
+- L'AI Service envoie un vrai prompt à Ollama et reçoit une vraie réponse du modèle
 - La mémoire des incidents est lue et écrite en base
-
-**En production / staging :** toujours `STUB_MODE=false` (ou absent). L'analyzer utilise le kubeconfig monté dans le conteneur.
 
 ---
 
@@ -952,10 +888,10 @@ POSTGRES_USER=podiq
 POSTGRES_PASSWORD=changeme
 
 # Database URLs par service (chaque service lit uniquement la sienne)
-GATEWAY_DATABASE_URL=postgresql://podiq:changeme@postgres-gateway:5432/podiq_gateway
-AUTH_DATABASE_URL=postgresql://podiq:changeme@postgres-auth:5433/podiq_auth
-ANALYZER_DATABASE_URL=postgresql://podiq:changeme@postgres-analyzer:5434/podiq_analyzer
-AI_DATABASE_URL=postgresql://podiq:changeme@postgres-ai:5435/podiq_ai
+GATEWAY_DATABASE_URL=postgresql://podiq:changeme@postgres-gateway:5432/podiq_gateway  # pragma: allowlist secret
+AUTH_DATABASE_URL=postgresql://podiq:changeme@postgres-auth:5433/podiq_auth  # pragma: allowlist secret
+ANALYZER_DATABASE_URL=postgresql://podiq:changeme@postgres-analyzer:5434/podiq_analyzer  # pragma: allowlist secret
+AI_DATABASE_URL=postgresql://podiq:changeme@postgres-ai:5435/podiq_ai  # pragma: allowlist secret
 
 # Redis
 REDIS_URL=redis://redis:6379/0
@@ -986,7 +922,7 @@ ALLOWED_HOSTS=localhost,127.0.0.1
 
 # Limites
 MAX_LOG_LINES=2000
-AI_TIMEOUT_SECONDS=30
+AI_TIMEOUT_SECONDS=300         # 300 en dev CPU Ollama ; 30 avec GPU
 
 # Memory Engine
 INCIDENT_HISTORY_DEPTH=5
@@ -994,8 +930,20 @@ INCIDENT_HISTORY_DEPTH=5
 # Corrélation
 CORRELATION_WINDOW_MINUTES=15
 
-# Développement — mettre false avec un vrai cluster K8s
-STUB_MODE=true
+# Gateway — workspace tokens
+GATEWAY_JWT_SECRET=changeme_gateway_jwt_secret
+GATEWAY_JWT_ACCESS_EXPIRY_MINUTES=60
+GATEWAY_REFRESH_SECRET=changeme_refresh_secret
+GATEWAY_REFRESH_EXPIRY_DAYS=30
+
+# CORS (frontend origins autorisés — requis pour cookies httpOnly)
+CORS_ALLOWED_ORIGINS=http://localhost:4200,http://localhost:8080
+
+# SMTP (invitations + canal email)
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USER=
+SMTP_PASSWORD=
 
 # CI/CD
 SLACK_WEBHOOK_URL=
@@ -1116,7 +1064,129 @@ CREATE TABLE namespace_snapshots (
 
 ### postgres-gateway — gateway
 
-Tables Django auto-générées uniquement (sessions, admin, auth Django interne).
+Tables Django + Phase 16 (workspaces, agents, invitations, notifications).
+
+#### analysis_jobs
+
+```sql
+CREATE TABLE analysis_jobs (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id      UUID NOT NULL,          -- référence applicative (auth-service)
+  workspace_id UUID,                   -- référence applicative (workspace, nullable)
+  pod_name     VARCHAR(255) NOT NULL,
+  namespace    VARCHAR(255) NOT NULL,
+  status       VARCHAR(20) DEFAULT 'pending', -- pending|running|complete|failed
+  result       JSONB,
+  error        TEXT,
+  created_at   TIMESTAMP DEFAULT NOW()
+);
+```
+
+#### workspaces
+
+```sql
+CREATE TABLE workspaces (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id     UUID NOT NULL,          -- référence applicative (auth-service, pas de FK)
+  name         VARCHAR(32) NOT NULL,
+  slug         VARCHAR(32) UNIQUE NOT NULL,
+  plan         VARCHAR(20) DEFAULT 'free', -- free|pro|enterprise
+  region       VARCHAR(10) NOT NULL,   -- eu|us|ap
+  team_size    VARCHAR(20),
+  accent_color VARCHAR(7),
+  icon_url     VARCHAR(500),
+  onboarded_at TIMESTAMP,
+  created_at   TIMESTAMP DEFAULT NOW()
+);
+```
+
+#### workspace_members
+
+```sql
+CREATE TABLE workspace_members (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id),
+  user_id      UUID NOT NULL,          -- référence applicative (auth-service, pas de FK)
+  role         VARCHAR(20) NOT NULL,   -- admin|member|viewer
+  joined_at    TIMESTAMP DEFAULT NOW(),
+  UNIQUE (workspace_id, user_id)
+);
+```
+
+#### install_tokens
+
+```sql
+CREATE TABLE install_tokens (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id),
+  token        VARCHAR(64) UNIQUE NOT NULL, -- wsk_xxx
+  expires_at   TIMESTAMP,
+  used         BOOLEAN DEFAULT FALSE,
+  created_at   TIMESTAMP DEFAULT NOW()
+);
+```
+
+#### clusters
+
+```sql
+CREATE TABLE clusters (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id      UUID NOT NULL REFERENCES workspaces(id),
+  install_token_id  UUID UNIQUE REFERENCES install_tokens(id),
+  name              VARCHAR(255),
+  k8s_version       VARCHAR(50),
+  status            VARCHAR(20) DEFAULT 'pending', -- pending|connected|disconnected
+  last_heartbeat    TIMESTAMP,
+  created_at        TIMESTAMP DEFAULT NOW()
+);
+```
+
+#### invitations
+
+```sql
+CREATE TABLE invitations (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id       UUID NOT NULL REFERENCES workspaces(id),
+  email              VARCHAR(255) NOT NULL,
+  role               VARCHAR(20) NOT NULL,
+  token              UUID UNIQUE NOT NULL,
+  status             VARCHAR(20) DEFAULT 'pending', -- pending|accepted|revoked|expired
+  invited_by_user_id UUID NOT NULL,
+  expires_at         TIMESTAMP NOT NULL,
+  created_at         TIMESTAMP DEFAULT NOW()
+);
+```
+
+#### alert_rules, notification_channels, quiet_hours
+
+```sql
+CREATE TABLE alert_rules (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id),
+  name         VARCHAR(255) NOT NULL,
+  event_type   VARCHAR(50) NOT NULL,  -- crashloop|oom|predeploy_block|fix_found
+  enabled      BOOLEAN DEFAULT TRUE,
+  created_at   TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE notification_channels (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id),
+  type         VARCHAR(20) NOT NULL, -- slack|pagerduty|email|webhook|teams|discord
+  config       JSONB NOT NULL,
+  enabled      BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE quiet_hours (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id   UUID UNIQUE NOT NULL REFERENCES workspaces(id),
+  enabled        BOOLEAN DEFAULT FALSE,
+  start_time     TIME,
+  end_time       TIME,
+  timezone       VARCHAR(50),
+  weekdays_only  BOOLEAN DEFAULT FALSE
+);
+```
 
 ---
 
@@ -1253,7 +1323,7 @@ Return ONLY this JSON:
 - Masquer les secrets dans les logs avant envoi à Ollama (regex sur `password`, `secret`, `token`, `key`)
 - RBAC K8s minimal : `get`, `list` sur pods/logs uniquement
 - Validation JWT sur chaque requête GraphQL
-- Validation API Key sur endpoint CI/CD (hash bcrypt en base)
+- Validation API Key sur endpoint CI/CD (hash SHA-256 en base — haute entropie, recherche déterministe)
 - Rate limiting par utilisateur et par API Key (Redis)
 - Logs bruts : TTL 30 jours maximum
 - Variables sensibles uniquement via `.env` / Docker secrets
@@ -1279,11 +1349,11 @@ Return ONLY this JSON:
   - gateway : sessions Django uniquement
 - Redis + Ollama (pull Mistral 7B)
 - proto gRPC → génération stubs Python dans `shared/grpc/`
-- Analyzer Service : `CollectPod` + `ScanNamespace` + `ParseManifest`
+- Analyzer Service : `ParseManifest` (CollectPod + ScanNamespace supprimés — collecte K8s déplacée vers l'agent)
 - AI Service : `AnalyzeIncident` + `ScanManifest` + `GetAnalysisHistory`
 - Auth Service : `Register` + `Login` + `ValidateJWT` + `CreateApiKey` + `ValidateApiKey` + `RevokeApiKey`
 - Gateway GraphQL complet : `analyzeIncident`, `scanManifest`, `register`, `login`, `analysisHistory`
-- Loki + Promtail + Grafana configurés (labels `service`, `namespace`, rétention 7j)
+- Loki + Grafana configurés via Loki Docker Log Driver (labels `service`, `namespace`, rétention 90j — SOC2 §7.3)
 - README.md dans chaque microservice (FR, analogies, gRPC I/O, DB, env vars)
 
 ### Semaine 2 — IA & Différenciants
@@ -1362,14 +1432,19 @@ Return ONLY this JSON:
 ### Points d'attention critiques
 
 1. **Ne jamais appeler Ollama depuis la Gateway** — passer obligatoirement par ai-service via gRPC
-2. **Truncate à 2000 lignes dans analyzer-service** — jamais dans ai-service
+2. **Truncate à 2000 lignes dans l'agent** — l'agent plafonne les logs avant envoi ; ai-service reçoit des données déjà tronquées
 3. **Le job d'analyse est toujours async** — la Gateway ne bloque jamais sur l'IA
 4. **La Gateway est légère** — orchestration uniquement, zéro logique métier
-5. **Masquer les secrets dans analyzer-service** — avant toute transmission à ai-service
+5. **Masquer les secrets dans l'agent** — avant envoi au gateway ; le gateway n'inspecte jamais le contenu des logs
 6. **Memory Engine dans ai-service** — lit PostgreSQL directement pour enrichir le prompt
 7. **Endpoint CI/CD est REST** — exit codes 0 / 1 / 2, pas GraphQL
-8. `**incident_patterns` : upsert à chaque analyse** — clé unique `(pod_name, namespace, error_type)`
-9. `**namespace_snapshots` collecté à chaque analyse incident** — même si la corrélation est partielle
+8. **`incident_patterns` : upsert à chaque analyse** — clé unique `(pod_name, namespace, error_type)`
+9. **`namespace_pods` JSON envoyé par l'agent** — `_build_namespace_context()` dans `gateway/app/tasks.py` le parse et construit `List[PodContext]` pour la corrélation temporelle ; `CORRELATION_WINDOW_MINUTES` (env var, défaut 15) contrôle la fenêtre
+10. **Chaque service possède son propre PostgreSQL** — aucun service ne lit la base d'un autre
+11. **Pas de FK cross-service** — les références croisées sont des UUIDs applicatifs, vérifiés au niveau applicatif via gRPC
+12. **`install_token.used=True` = cluster enregistré, pas token invalidé** — l'agent réutilise le même token indéfiniment (seule l'expiry est vérifiée)
+13. **JWT en deux temps** — user-JWT (auth-service gRPC) → workspace-JWT (gateway, `GATEWAY_JWT_SECRET`) via `mutation selectWorkspace`
+14. **`require_auth()` gère deux contextes** — dict Starlette (HTTP + WebSocket) et objet Django legacy ; WebSocket → token via `connection_params["Authorization"]`
 
 ### Ordre de développement recommandé
 
@@ -1377,15 +1452,21 @@ Return ONLY this JSON:
 1.  Docker Compose complet
 2.  Migrations PostgreSQL (toutes les tables dès le début)
 3.  proto gRPC → génération stubs
-4.  Analyzer Service : CollectPod + ScanNamespace + ParseManifest
+4.  Analyzer Service : ParseManifest uniquement (CollectPod + ScanNamespace supprimés)
 5.  AI Service : AnalyzeIncident (prompt basique, valider JSON)
 6.  Gateway GraphQL : mutation analyze + query history
 7.  Memory Engine (lecture historique + enrichissement prompt)
-8.  Namespace scan + corrélation temporelle
+8.  Corrélation temporelle agent-based — agent envoie namespace_pods JSON →
+    _build_namespace_context() dans gateway/tasks.py → PodContext enrichi
 9.  Pre-deploy scan : ParseManifest + prompt predeploy
 10. Endpoint CI/CD REST + API Keys
 11. Redis Queue Dramatiq (flux async complet)
-12. Loki + Grafana + Promtail + dashboard
-13. Frontend Angular
-14. CLI
+12. Loki + Grafana (log driver, sans Promtail) + dashboard podiq-overview.json
+13. Auth & Workspace : JWT deux temps + refresh token httpOnly cookie
+14. Agent GraphQL-first : agentHeartbeat + agentReportIncident + generateInstallToken
+15. GraphQL Subscriptions : clusterConnected + jobStatus (WebSocket via graphql-ws)
+16. Invitations : inviteMember + acceptInvitation + Dramatiq email task
+17. Notifications : AlertRule + NotificationChannel + QuietHours + send_notifications_task
+18. Frontend Angular
+19. Agent service Python (services/agent/) + Helm chart
 ```

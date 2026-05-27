@@ -1,0 +1,27 @@
+# Pod that fails because it references a ConfigMap that doesn't exist.
+# Status: Pending → CreateContainerConfigError
+# Useful for testing analyzeIncident on a configuration error.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: podiq-test-missing-config
+  namespace: default
+  labels:
+    podiq-test: "true"
+    scenario: missing-config
+spec:
+  restartPolicy: Never
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sh", "-c", "echo $APP_SECRET && sleep 30"]
+      envFrom:
+        - configMapRef:
+            name: podiq-nonexistent-config
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "50m"
+        limits:
+          memory: "64Mi"
+          cpu: "100m"

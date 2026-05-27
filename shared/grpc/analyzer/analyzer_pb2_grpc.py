@@ -34,16 +34,6 @@ class AnalyzerServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.CollectPod = channel.unary_unary(
-                '/analyzer.AnalyzerService/CollectPod',
-                request_serializer=analyzer_dot_analyzer__pb2.PodRequest.SerializeToString,
-                response_deserializer=analyzer_dot_analyzer__pb2.PodData.FromString,
-                _registered_method=True)
-        self.ScanNamespace = channel.unary_unary(
-                '/analyzer.AnalyzerService/ScanNamespace',
-                request_serializer=analyzer_dot_analyzer__pb2.NamespaceRequest.SerializeToString,
-                response_deserializer=analyzer_dot_analyzer__pb2.NamespaceSnapshot.FromString,
-                _registered_method=True)
         self.ParseManifest = channel.unary_unary(
                 '/analyzer.AnalyzerService/ParseManifest',
                 request_serializer=analyzer_dot_analyzer__pb2.ManifestRequest.SerializeToString,
@@ -54,18 +44,6 @@ class AnalyzerServiceStub(object):
 class AnalyzerServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
-    def CollectPod(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
-    def ScanNamespace(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
     def ParseManifest(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -75,16 +53,6 @@ class AnalyzerServiceServicer(object):
 
 def add_AnalyzerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'CollectPod': grpc.unary_unary_rpc_method_handler(
-                    servicer.CollectPod,
-                    request_deserializer=analyzer_dot_analyzer__pb2.PodRequest.FromString,
-                    response_serializer=analyzer_dot_analyzer__pb2.PodData.SerializeToString,
-            ),
-            'ScanNamespace': grpc.unary_unary_rpc_method_handler(
-                    servicer.ScanNamespace,
-                    request_deserializer=analyzer_dot_analyzer__pb2.NamespaceRequest.FromString,
-                    response_serializer=analyzer_dot_analyzer__pb2.NamespaceSnapshot.SerializeToString,
-            ),
             'ParseManifest': grpc.unary_unary_rpc_method_handler(
                     servicer.ParseManifest,
                     request_deserializer=analyzer_dot_analyzer__pb2.ManifestRequest.FromString,
@@ -100,60 +68,6 @@ def add_AnalyzerServiceServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class AnalyzerService(object):
     """Missing associated documentation comment in .proto file."""
-
-    @staticmethod
-    def CollectPod(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/analyzer.AnalyzerService/CollectPod',
-            analyzer_dot_analyzer__pb2.PodRequest.SerializeToString,
-            analyzer_dot_analyzer__pb2.PodData.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def ScanNamespace(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/analyzer.AnalyzerService/ScanNamespace',
-            analyzer_dot_analyzer__pb2.NamespaceRequest.SerializeToString,
-            analyzer_dot_analyzer__pb2.NamespaceSnapshot.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
 
     @staticmethod
     def ParseManifest(request,

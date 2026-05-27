@@ -3,7 +3,8 @@ def pytest_configure(config):
     import os
 
     os.environ.setdefault(
-        "DATABASE_URL", "postgresql://podiq:podiq@localhost:5432/podiq_gateway"
+        "DATABASE_URL",
+        "postgresql://podiq:podiq@localhost:5432/podiq_gateway",  # pragma: allowlist secret
     )
     os.environ.setdefault("DJANGO_SECRET_KEY", "test-secret-key-not-for-production")
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")

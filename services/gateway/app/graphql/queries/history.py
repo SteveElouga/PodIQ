@@ -3,6 +3,7 @@ from functools import partial
 
 import strawberry
 import structlog
+from asgiref.sync import sync_to_async
 from strawberry.types import Info
 
 from app.auth import require_auth
@@ -20,9 +21,14 @@ def _analysis_history(
     limit: int = 10,
     analysis_type: str = "",
 ) -> list[AnalysisHistoryItem]:
-    user_id = require_auth(info)
+    ctx = require_auth(info)
+    workspace_id = ctx.workspace_id or ""
     logger.info(
-        "query_analysis_history", pod=pod_name, namespace=namespace, user_id=user_id
+        "query_analysis_history",
+        pod=pod_name,
+        namespace=namespace,
+        user_id=ctx.user_id,
+        workspace_id=workspace_id,
     )
 
     response = invoke_grpc(
@@ -33,6 +39,7 @@ def _analysis_history(
             namespace=namespace,
             limit=limit,
             analysis_type=analysis_type,
+            workspace_id=workspace_id,
         ),
     )
 
@@ -56,7 +63,9 @@ def _analysis_history(
 
 
 @strawberry.field
-def analysis_history(
+async def analysis_history(
     info: Info, pod_name: str, namespace: str, limit: int = 10, analysis_type: str = ""
 ) -> list[AnalysisHistoryItem]:
-    return _analysis_history(info, pod_name, namespace, limit, analysis_type)
+    return await sync_to_async(_analysis_history)(
+        info, pod_name, namespace, limit, analysis_type
+    )

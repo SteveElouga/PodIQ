@@ -8,6 +8,9 @@ from concurrent import futures
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+
 _docker_setup = Path("/app/structlog_setup.py")
 if _docker_setup.is_file():
     _root_app = str(_docker_setup.parent)
@@ -43,14 +46,41 @@ JWT_EXPIRY_MINUTES = int(os.environ.get("JWT_EXPIRY_MINUTES", "1440"))
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# Argon2id — paramètres OWASP (time=2, mem=64 MB, p=2) — SOC2 §8.3
+_ph = PasswordHasher(
+    time_cost=2, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16
+)
+
 
 def _hash_password(password: str) -> str:
-    pepper = os.environ.get("DJANGO_SECRET_KEY", "")
-    return hashlib.sha256(f"{pepper}{password}".encode()).hexdigest()
+    """Hash a password with Argon2id. Each call generates a unique random salt."""
+    return _ph.hash(password)
+
+
+def _needs_rehash(stored_hash: str) -> bool:
+    """True if the hash uses the legacy SHA-256+pepper format and must be upgraded."""
+    return not stored_hash.startswith("$argon2")
 
 
 def _verify_password(password: str, stored_hash: str) -> bool:
-    return hmac.compare_digest(_hash_password(password), stored_hash)
+    """
+    Verify a password against its stored hash.
+
+    Supports two formats transparently:
+    - Argon2id  (new)    : stored_hash starts with '$argon2id$'
+    - SHA-256+pepper (legacy) : 64-char hex — accepted during migration only.
+
+    After a successful login, call _needs_rehash() and upgrade if True.
+    """
+    if stored_hash.startswith("$argon2"):
+        try:
+            return _ph.verify(stored_hash, password)
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            return False
+    # Legacy path — SHA-256 + DJANGO_SECRET_KEY pepper
+    pepper = os.environ.get("DJANGO_SECRET_KEY", "")
+    legacy = hashlib.sha256(f"{pepper}{password}".encode()).hexdigest()
+    return hmac.compare_digest(legacy, stored_hash)
 
 
 def _generate_token(user_id: str, email: str) -> str:
@@ -117,6 +147,12 @@ class AuthServicer(auth_pb2_grpc.AuthServiceServicer):
             context.set_code(grpc.StatusCode.UNAUTHENTICATED)
             context.set_details("Invalid email or password")
             return auth_pb2.AuthResponse()
+
+        # Transparent migration: upgrade legacy SHA-256 hashes to Argon2id on login
+        if _needs_rehash(user.password_hash):
+            user.password_hash = _hash_password(request.password)
+            user.save(update_fields=["password_hash"])
+            logger.info("password_rehashed_argon2id", user_id=str(user.id))
 
         token = _generate_token(str(user.id), user.email)
         logger.info("auth_login_ok", user_id=str(user.id))

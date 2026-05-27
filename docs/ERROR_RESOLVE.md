@@ -193,7 +193,9 @@ Dans Docker Compose, ne jamais utiliser un bloc `upstream` Nginx avec un hostnam
 
 ## [2026-05-11] analyzeIncident échoue sans cluster Kubernetes
 
-**Erreur**
+> ⚠️ **ARCHITECTURE SUPERSEDED — Phase 16** : `STUB_MODE` et `CollectPod`/`ScanNamespace` ont été **supprimés** de l'analyzer-service. La collecte K8s est désormais assurée par l'**agent PodIQ** déployé dans le cluster client. L'agent envoie les données via `agentReportIncident` (logs, events, describe, namespace_pods). Pour tester sans vrai agent, utiliser `scripts/agent_simulate.sh`. Cette erreur ne peut plus se produire.
+
+**Erreur (historique)**
 ```
 grpc._channel._InactiveRpcError: StatusCode.INTERNAL
 Details: [Errno 111] Connection refused / No such file or directory: ~/.kube/config
@@ -201,29 +203,17 @@ Details: [Errno 111] Connection refused / No such file or directory: ~/.kube/con
 
 **Service concerné** : `analyzer-service` → propagé au `gateway`
 
-**Cause**
-La mutation `analyzeIncident` appelle `CollectPod` dans l'analyzer-service, qui tente de charger la configuration Kubernetes (`load_incluster_config()` puis `load_kube_config()`). Sans cluster Kubernetes ni fichier `~/.kube/config`, les deux tentatives échouent et le service retourne une erreur gRPC INTERNAL.
+**Cause (historique)**
+La mutation `analyzeIncident` appelait `CollectPod` dans l'analyzer-service, qui tentait de charger la configuration Kubernetes (`load_incluster_config()` puis `load_kube_config()`). Sans cluster Kubernetes ni fichier `~/.kube/config`, les deux tentatives échouaient et le service retournait une erreur gRPC INTERNAL.
 
-**Solution**
-Ajouter `STUB_MODE=true` dans `.env`. En mode stub, `collect_pod()` et `scan_namespace()` retournent des données fictives réalistes (pod en CrashLoopBackOff, namespace avec 3 pods) sans appeler Kubernetes. Le reste du pipeline (AI Service → Ollama) s'exécute normalement.
-
-```env
-# .env
-STUB_MODE=true
-```
-
+**Solution actuelle (Phase 16+)**
+L'agent PodIQ collecte les données dans le cluster et les envoie via `agentReportIncident`. Pour simuler sans vrai agent :
 ```bash
-docker compose up -d --build analyzer-service
-```
-
-Vérifier l'activation :
-```bash
-docker compose logs analyzer-service | grep "stub"
-# → collect_pod_stub ou scan_namespace_stub
+./scripts/agent_simulate.sh wsk_xxx <pod_name> <namespace> <workspace-jwt>
 ```
 
 **Règle à retenir**
-`STUB_MODE=true` est réservé au développement local sans cluster. Toujours mettre `STUB_MODE=false` (ou ne pas le définir) en environnement de staging/production avec un vrai cluster.
+Depuis Phase 16, `analyzer-service` ne se connecte plus à Kubernetes. Toute la collecte K8s est dans l'agent.
 
 ---
 
@@ -240,17 +230,17 @@ Unexpected token '<', "<html>..." is not valid JSON
 **Cause fréquente**
 Gunicorn tue le worker qui traite la requête après **30 s** par défaut, alors que `analyzeIncident` attend souvent **plus longtemps** la réponse de l’ai-service (Ollama). Le worker plante, Nginx renvoie une page d’erreur **HTML** ; le client GraphQL tente de parser ce HTML comme du JSON.
 
-**Solution**
-Le `Dockerfile` du gateway lance Gunicorn avec **`--timeout 180`**. Reconstruire l’image après mise à jour :
+**Solution actuelle (Phase 16+ — Uvicorn ASGI)**
 
-```bash
-docker compose up -d --build gateway
-```
+> ℹ️ Depuis Phase 16, le gateway utilise **Uvicorn ASGI** (plus Gunicorn). Ce problème de timeout Gunicorn ne se produit plus. Le timeout pertinent est maintenant `AI_TIMEOUT_SECONDS` (côté ai-service → Ollama), à mettre à **300** en dev CPU.
 
-Aligner si besoin `AI_TIMEOUT_SECONDS` dans `.env` (ex. **120**) et vérifier les logs Ollama / ai-service pour d’autres causes de lenteur.
+**Solution historique (pré-Phase 16)**
+Le `Dockerfile` du gateway lançait Gunicorn avec **`--timeout 180`**. Reconstruire l’image après mise à jour.
+
+Aligner si besoin `AI_TIMEOUT_SECONDS` dans `.env` (ex. **300** en dev CPU) et vérifier les logs Ollama / ai-service pour d’autres causes de lenteur.
 
 **Règle à retenir**
-Le timeout worker Gunicorn doit être **≥** la durée maximale acceptable d’une mutation longue (ici surtout l’inférence IA).
+Depuis Phase 16 : Uvicorn ASGI — il n’y a plus de timeout worker. Augmenter `AI_TIMEOUT_SECONDS=300` si Ollama met trop longtemps sur CPU.
 
 ---
 
@@ -293,6 +283,84 @@ Ne pas supposer une réponse JSON « pure » de tous les modèles Ollama ; prév
 
 ---
 
+## [2026-05-27] pre-commit — `Django==5.2.1` incompatible avec Python 3.9 dans les hooks locaux
+
+**Erreur**
+```
+ERROR: Could not find a version that satisfies the requirement Django==5.2.1
+ERROR: No matching distribution found for Django==5.2.1
+```
+
+**Service concerné** : hook `mypy-services` (local) dans `.pre-commit-config.yaml`
+
+**Cause**
+Le hook `mypy-services` utilise `language: python` sans `language_version` explicite. Pre-commit prend alors le premier `python3` résolvable dans le PATH, qui était Python 3.9 (Python système macOS). Django 5.x requiert **Python ≥ 3.10** — l'installation échoue dans l'environnement isolé que pre-commit crée pour le hook.
+
+Symptômes typiques menant à ce problème :
+1. Présence d'un `venv/` cassé créé avec une version Python désinstallée (ex. Python 3.14) — pre-commit l'active et hérite du mauvais interpréteur.
+2. PATH ne contenant pas `/opt/homebrew/bin` ou `/opt/homebrew/opt/python@3.12/libexec/bin` → `python3` pointe vers le Python système Apple (3.9.6).
+
+**Solution**
+1. Installer Python 3.12 via Homebrew (une seule fois par machine) :
+```bash
+brew install python@3.12
+```
+
+2. Ajouter `language_version: python3.12` **explicitement** aux deux hooks locaux dans `.pre-commit-config.yaml` :
+```yaml
+- id: hadolint-dockerfiles
+  language: python
+  language_version: python3.12          # ← ajouté
+  ...
+
+- id: mypy-services
+  language: python
+  language_version: python3.12          # ← ajouté
+  ...
+```
+Pre-commit cherche `python3.12` dans le PATH système (pas dans le venv courant). `/opt/homebrew/bin/python3.12` est trouvé directement.
+
+3. Purger le cache pre-commit (envs créés avec Python 3.9) et réinstaller :
+```bash
+pre-commit clean
+pre-commit install
+```
+
+**Règle à retenir**
+Dès qu'un hook `language: python` installe des dépendances qui requièrent Python ≥ 3.10 (Django 5.x, psycopg 3.x…), toujours préciser `language_version: python3.12` (ou supérieur). Ne pas compter sur `python3` du PATH — sa résolution dépend de l'environnement shell et peut pointer vers le Python système macOS (3.9).
+
+---
+
+## [2026-05-27] mypy (pre-commit) — `Cannot find implementation or library stub for module named "argon2"`
+
+**Erreur**
+```
+app/grpc_server.py:11: error: Cannot find implementation or library stub for module named "argon2"  [import-not-found]
+app/grpc_server.py:12: error: Cannot find implementation or library stub for module named "argon2.exceptions"  [import-not-found]
+Found 2 errors in 1 file (checked 13 source files)
+```
+
+**Service concerné** : hook `mypy-services` (pre-commit) → `auth-service/app/grpc_server.py`
+
+**Cause**
+Le hook mypy tourne dans un environnement isolé créé par pre-commit. Cet environnement n'installe que les paquets listés dans `additional_dependencies`. `argon2-cffi` (qui fournit le module `argon2`) avait été ajouté au `requirements.txt` de l'auth-service mais pas à la liste `additional_dependencies` du hook dans `.pre-commit-config.yaml`.
+
+**Solution**
+Ajouter `argon2-cffi==23.1.0` aux `additional_dependencies` du hook `mypy-services` dans `.pre-commit-config.yaml` :
+
+```yaml
+- id: mypy-services
+  additional_dependencies:
+    ...
+    - PyYAML==6.0.2
+    - argon2-cffi==23.1.0    # ← ajouté
+```
+
+**Règle à retenir**
+Chaque nouvelle dépendance ajoutée à un `requirements.txt` de service doit être **également ajoutée** aux `additional_dependencies` du hook `mypy-services` dans `.pre-commit-config.yaml`. Le hook mypy est isolé — il ne lit pas les `requirements.txt` des services. Sans cette synchronisation, mypy échoue avec `import-not-found` dès que le module est importé dans un fichier analysé.
+
+---
+
 ## [2026-05-12] pre-commit — « no files to check » ou secrets / baseline
 
 **Symptôme**
@@ -316,5 +384,480 @@ Sans **`--all-files`**, pre-commit ne traite **que les fichiers déjà stagés**
 
 **Cause**
 Normal ; les environnements sont mis en cache sous `~/.cache/pre-commit`.
+
+---
+
+## [2026-05-17] Loki — HTTP 500 `at least 1 live replicas required`
+
+**Erreur**
+```
+level=warn caller=client.go:419 component=client host=loki:3100
+msg="error sending batch, will retry" status=500
+error="at least 1 live replicas required, could only find 0
+       unhealthy instances: 127.0.0.1:9096"
+```
+
+**Service concerné** : `promtail` → `loki` (logs vides dans Grafana)
+
+**Cause**
+Loki 3.x démarre en mode single-binary mais tente d'utiliser un ring distribué pour l'ingester. La section `common.ring` ne propage pas automatiquement la configuration à tous les sous-composants internes. L'ingester n'a pas de ring explicite, se marque `unhealthy`, et Loki refuse tout batch entrant avec HTTP 500.
+
+**Solution**
+Ajouter une section `ingester` explicite dans `infra/loki/loki-config.yml` :
+
+```yaml
+ingester:
+  lifecycler:
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+    final_sleep: 0s
+  chunk_idle_period: 1m
+  chunk_retain_period: 30s
+  max_chunk_age: 2h
+```
+
+Puis redémarrer Loki :
+```bash
+docker compose restart loki
+```
+
+**Règle à retenir**
+En Loki 3.x, `common.ring` ne suffit pas pour le mode single-binary — chaque composant (ingester, distributor) doit avoir son ring configuré explicitement. Le warning `zone not set` résiduel est bénin et n'empêche pas l'ingestion.
+
+---
+
+## [2026-05-17] kubeconfig — `File does not exist: /Users/apple/.minikube/ca.crt`
+
+> ⚠️ **ARCHITECTURE SUPERSEDED — Phase 16** : L'analyzer-service ne se connecte plus à Kubernetes. La collecte K8s est assurée par l'agent PodIQ dans le cluster client. Les erreurs kubeconfig de ce type ne peuvent plus se produire dans l'analyzer-service.
+
+**Erreur**
+```json
+{
+  "error": "File does not exist: /Users/apple/.minikube/ca.crt"
+}
+```
+
+**Service concerné** : `analyzer-service` (connexion à l'API K8s depuis le conteneur)
+
+**Cause**
+`minikube kubectl -- config view --raw` génère un kubeconfig avec des **chemins absolus** vers les certificats sur la machine hôte (`certificate-authority: /Users/apple/.minikube/ca.crt`, etc.). Ces chemins n'existent pas dans le conteneur Docker.
+
+**Solution**
+Utiliser le flag `--flatten` qui embarque les contenus des fichiers `.crt`/`.key` en base64 directement dans le YAML, supprimant toute référence au système de fichiers hôte :
+
+```bash
+# Dans make cluster-config (Makefile)
+minikube kubectl -- config view --flatten --minify > $(KUBECONFIG_PATH)
+```
+
+`--minify` limite au contexte actif uniquement.
+
+**Règle à retenir**
+Toujours utiliser `--flatten` lors de l'export d'un kubeconfig destiné à être monté dans un conteneur. Sans `--flatten`, les chemins de certificats sont copiés tels quels et invalides dans tout environnement autre que la machine d'origine.
+
+---
+
+## [2026-05-17] kubeconfig — `Connection refused` sur `172.17.0.1:PORT` (minikube Docker driver)
+
+> ⚠️ **ARCHITECTURE SUPERSEDED — Phase 16** : Même raison que l'entrée précédente. L'analyzer-service ne se connecte plus à Kubernetes.
+
+**Erreur**
+```
+HTTPSConnectionPool(host='172.17.0.1', port=59782): Max retries exceeded
+Caused by NewConnectionError: Failed to establish a new connection: [Errno 111] Connection refused
+```
+
+**Service concerné** : `analyzer-service` → API server minikube
+
+**Cause**
+Lors de la génération du kubeconfig, l'IP `172.17.0.1` (gateway du bridge Docker, obtenue via `docker network inspect bridge`) était substituée à `127.0.0.1`. Mais sur **macOS avec Docker Desktop**, les conteneurs tournent dans une VM Linux : `172.17.0.1` est la gateway interne de cette VM, pas le Mac hôte. Le port minikube (`59782`) est mappé sur `127.0.0.1` du Mac, inaccessible depuis la VM.
+
+**Solution**
+Faire parler `analyzer-service` **directement au conteneur minikube** via le réseau Docker `minikube`, en contournant le port-mapping hôte :
+
+1. Récupérer l'IP du conteneur minikube sur son réseau Docker :
+```bash
+MINIKUBE_IP=$(docker inspect minikube \
+  --format='{{.NetworkSettings.Networks.minikube.IPAddress}}')
+# ex: 192.168.49.2
+```
+
+2. Réécrire l'adresse API server dans le kubeconfig (port 8443 = port interne K8s) :
+```bash
+sed -i '' "s|https://127\.0\.0\.1:[0-9]*|https://$MINIKUBE_IP:8443|g" kubeconfig
+```
+
+3. Connecter `analyzer-service` au réseau Docker `minikube` dans `docker-compose.cluster.yml` :
+```yaml
+services:
+  analyzer-service:
+    networks:
+      - backend
+      - minikube
+
+networks:
+  minikube:
+    external: true
+    name: minikube
+```
+
+Tout cela est géré automatiquement par `make cluster-config` + `make up-cluster`.
+
+**Règle à retenir**
+Sur macOS Docker Desktop, ne jamais utiliser la gateway du bridge Docker (`172.17.0.x`) pour joindre des services hôte depuis un conteneur — utiliser `host.docker.internal` ou, mieux, mettre les conteneurs sur le même réseau Docker et communiquer directement (IP container + port interne).
+
+---
+
+## [2026-05-17] `analyses.recurrence_count` toujours à 0
+
+**Symptôme**
+Le champ `recurrenceCount` retourné par `analysisJob` est toujours `0` même après plusieurs analyses du même pod.
+
+**Service concerné** : `ai-service` (`app/grpc_server.py`)
+
+**Cause**
+Dans `AnalyzeIncident`, l'ordre des opérations était incorrect :
+```python
+# Ordre incorrect
+_save_analysis(request, result)    # INSERT analyses avec recurrence_count=0 (valeur défaut)
+_upsert_pattern(request, result)   # UPSERT incident_patterns (occurrence_count++)
+recurrence_count = _get_recurrence_count(...)  # lu trop tard, jamais passé à _save_analysis
+```
+`_save_analysis()` ne recevait pas `recurrence_count` et ne le passait pas au modèle — `analyses.recurrence_count` restait à sa valeur par défaut (0).
+
+**Solution**
+Inverser l'ordre et passer `recurrence_count` à `_save_analysis()` :
+```python
+# Ordre correct
+_upsert_pattern(request, result)              # UPSERT en premier
+recurrence_count = _get_recurrence_count(...) # lire après l'upsert
+_save_analysis(request, result, recurrence_count)  # persister la bonne valeur
+```
+
+Et mettre à jour la signature de `_save_analysis()` :
+```python
+def _save_analysis(request, result, recurrence_count: int = 0) -> Analysis:
+    ...
+    Analysis.objects.create(..., recurrence_count=recurrence_count, ...)
+```
+
+**Règle à retenir**
+`analyses.recurrence_count` est une **dénormalisation** de `incident_patterns.occurrence_count` au moment de l'analyse. Pour qu'elle soit correcte, le pattern doit être upsert **avant** que l'analyse soit sauvegardée.
+
+---
+
+## [2026-05-19] agent_simulate.sh — `status: unknown` lors du poll `analysisJob`
+
+**Symptôme**
+```bash
+[1] status: unknown
+[2] status: unknown
+...
+Timeout — job still running after 150s
+```
+
+**Service concerné** : `scripts/agent_simulate.sh` (poll GraphQL)
+
+**Cause**
+La query de poll dans le script utilisait `query($id: ID!)` mais le schéma Strawberry déclare `job_id: str` → type GraphQL `String!` (pas `ID!`). GraphQL rejetait silencieusement la variable avec une erreur de type :
+```
+Variable '$id' of type 'ID!' used in position expecting type 'String!'.
+```
+Le gateway retournait `{"data": {"analysisJob": null}}`. `jq` décodait `null` comme `"unknown"`.
+
+**Solution**
+Changer `ID!` en `String!` dans la query de poll :
+```bash
+# Avant (incorrect)
+'{query: "query($id:ID!){analysisJob(jobId:$id){status ...}}", variables: {id: $id}}'
+
+# Après (correct)
+'{query: "query($id:String!){analysisJob(jobId:$id){status ...}}", variables: {id: $id}}'
+```
+
+**Vérification**
+```bash
+# Tester manuellement avec String! — doit retourner status réel
+JOB_ID="<uuid>"
+curl -s -X POST http://localhost:8080/graphql \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <workspace-jwt>" \
+  -d "{\"query\":\"query(\$id:String!){analysisJob(jobId:\$id){status}}\",\"variables\":{\"id\":\"$JOB_ID\"}}"
+```
+
+**Règle à retenir**
+Strawberry GraphQL mappe `str` Python → `String!` GraphQL, **pas** `ID!`. Ne jamais utiliser `ID!` dans les queries de poll de jobs PodIQ — tous les IDs internes sont des `String!` dans le schéma Strawberry généré.
+
+---
+
+## [2026-05-19] agent_simulate.sh — `status: unknown` avec UUID comme 4e argument
+
+**Symptôme**
+```
+[1] status: unknown
+```
+
+**Service concerné** : `scripts/agent_simulate.sh` — usage incorrect
+
+**Cause**
+L'utilisateur passe le `workspace_id` (UUID format `5665e7b7-...`) comme 4e argument au lieu du **workspace-JWT** (`eyJhbGci...`). `require_auth()` ne peut pas décoder un UUID comme JWT → la query `analysisJob` échoue avec une erreur d'authentification → retourne `null` → `jq` déduit `"unknown"`.
+
+**Solution**
+Le 4e argument doit être un **workspace-JWT** commençant par `eyJ`, obtenu via :
+```graphql
+mutation {
+  selectWorkspace(workspaceId: "uuid-du-workspace") {
+    token    # ← c'est ce token à passer comme 4e argument
+  }
+}
+```
+
+Puis :
+```bash
+./scripts/agent_simulate.sh wsk_xxx pod-name default eyJhbGci...
+#                                                    ^^^^^^^^^ JWT, pas UUID
+```
+
+**Règle à retenir**
+Le 4e argument de `agent_simulate.sh` est un **JWT workspace-scoped** (commence par `eyJ`), pas un workspace UUID. Si vous n'avez que le UUID, appeler d'abord `mutation { selectWorkspace(...) { token } }`.
+
+---
+
+## [2026-05-25] Docker Desktop macOS — `operation not permitted` sur bind mounts vers `~/Documents`
+
+**Erreur**
+```
+Error response from daemon: error while creating mount source path
+'/host_mnt/Users/apple/Documents/PodIQ/infra/loki/loki-config.yml':
+mkdir /host_mnt/Users/apple/Documents: operation not permitted
+```
+
+Et avec `configs: file:` (Compose v5) :
+```
+Error response from daemon: invalid mount config for type "bind":
+stat /host_mnt/Users/apple/Documents/PodIQ/infra/loki/loki-config.yml:
+operation not permitted
+```
+
+**Services concernés** : `loki`, `promtail`, `grafana`, `nginx` (tout service avec un bind mount vers `./infra/`)
+
+**Cause**
+Docker Desktop sur macOS gère le partage de fichiers via une VM Linux interne. Par défaut, seuls certains chemins hôte sont accessibles (typiquement `/Users/<user>`, `/tmp`, `/var/folders`). Si Docker Desktop n'a pas explicitement `/Users/apple/Documents` dans ses répertoires autorisés, toute tentative de bind mount depuis ce chemin échoue avec `operation not permitted`.
+
+La directive `configs: file:` de Docker Compose est trompeuse : elle crée **également** un bind mount en coulisses et souffre du même blocage — l'erreur devient `invalid mount config for type "bind"` au lieu de `error while creating mount source path`, mais la cause est identique.
+
+**Ce qui ne fonctionne pas**
+```yaml
+# Tentative 1 — bind mount classique (échoue)
+volumes:
+  - ./infra/loki/loki-config.yml:/etc/loki/config.yml:ro
+
+# Tentative 2 — configs: file: (échoue aussi, bind mount interne)
+configs:
+  loki_config:
+    file: ./infra/loki/loki-config.yml
+services:
+  loki:
+    configs:
+      - source: loki_config
+        target: /etc/loki/config.yml
+```
+
+**Solution retenue — Dockerfiles dédiés par service d'infra**
+
+Créer un `Dockerfile` minimal dans chaque répertoire `infra/<service>/` qui `COPY` la config au moment du build. Docker lit les fichiers via le **build context** (mécanisme build, pas bind mount runtime) — pas de restriction macOS.
+
+```
+infra/
+  loki/
+    Dockerfile          ← FROM grafana/loki:3.1.1 + COPY loki-config.yml
+    loki-config.yml
+  promtail/
+    Dockerfile          ← FROM grafana/promtail:3.1.1 + COPY promtail-config.yml
+    promtail-config.yml
+  nginx/
+    Dockerfile          ← FROM nginx:1.27-alpine + COPY default.conf
+    default.conf
+  grafana/
+    Dockerfile          ← FROM grafana/grafana:11.3.1 + COPY provisioning/...
+    provisioning/
+```
+
+Contenu type (ex. `infra/loki/Dockerfile`) :
+```dockerfile
+FROM grafana/loki:3.1.1
+COPY loki-config.yml /etc/loki/config.yml
+```
+
+Dans `docker-compose.yml`, remplacer `image:` par `build:` pour ces services :
+```yaml
+# Avant
+loki:
+  image: grafana/loki:3.1.1
+  volumes:
+    - ./infra/loki/loki-config.yml:/etc/loki/config.yml:ro  # ← échoue
+
+# Après
+loki:
+  build:
+    context: ./infra/loki
+    dockerfile: Dockerfile
+  # plus de volumes pour la config — COPY l'a embarquée dans l'image
+```
+
+**Mettre à jour une config** : modifier le fichier source dans `infra/<service>/` puis :
+```bash
+docker compose up -d --build loki   # rebuild rapide (couche COPY en cache si pas modifiée)
+```
+
+**Alternative si Docker Desktop est configurable**
+Ouvrir Docker Desktop → ⚙️ Settings → Resources → File Sharing → ajouter `/Users/apple/Documents` → Apply & Restart. Le projet repasse alors aux bind mounts classiques sans modification de code.
+
+**Règle à retenir**
+Sur macOS Docker Desktop avec un projet dans `~/Documents`, ne jamais utiliser de bind mounts vers des fichiers de config statiques. Embarquer ces fichiers dans des images via `COPY` (Dockerfile dédié) : pas de restriction file sharing, rebuild rapide grâce au cache Docker, les sources restent dans le repo à leur emplacement naturel.
+
+---
+
+## [2026-05-25] SOC2 — Suppression du mount docker.sock (Promtail → Loki Docker Log Driver)
+
+**Contexte**
+Promtail utilisait `docker_sd_configs` avec `/var/run/docker.sock:/var/run/docker.sock:ro` pour collecter les logs. Via `docker inspect`, ce socket permettait de lire les variables d'environnement de tous les conteneurs (JWT_SECRET, POSTGRES_PASSWORD, etc.) — risque R-11 de la politique SOC2.
+
+**Solution**
+Remplacer Promtail par le **Loki Docker Log Driver** (Option A) :
+
+1. Installer le plugin une fois par machine dev :
+```bash
+docker plugin install grafana/loki-docker-driver:latest --alias loki --grant-all-permissions
+```
+
+2. Exposer Loki sur `127.0.0.1:3100` (requis par le driver qui tourne hors réseau Docker) :
+```yaml
+loki:
+  ports:
+    - "127.0.0.1:3100:3100"
+```
+
+3. Ajouter un YAML anchor commun et un bloc `logging:` par service :
+```yaml
+x-loki-options: &loki-options
+  loki-url: "http://host.docker.internal:3100/loki/api/v1/push"
+  loki-retries: "5"
+  loki-batch-size: "400"
+  loki-timeout: "10s"
+
+services:
+  gateway:
+    logging:
+      driver: loki
+      options:
+        <<: *loki-options
+        loki-external-labels: "namespace=podiq,service=gateway"
+```
+
+4. Supprimer le service `promtail` du `docker-compose.yml`.
+
+5. **Ne pas appliquer le driver à `loki` et `grafana`** (risque de boucle si Loki redémarre).
+
+**Vérification post-déploiement**
+```bash
+# Aucun docker.sock monté
+docker ps -q | xargs docker inspect --format '{{.Name}} → {{range .Mounts}}{{if eq .Source "/var/run/docker.sock"}}SOCKET{{end}}{{end}}'
+# → toutes les lignes doivent être vides après le nom
+
+# Log driver Loki actif
+docker inspect podiq-gateway --format '{{.HostConfig.LogConfig.Type}}'
+# → loki
+```
+
+**Règle à retenir**
+Ne jamais monter `/var/run/docker.sock` dans un conteneur de collecte de logs en production. Utiliser le log driver Loki (Docker Compose) ou un DaemonSet Promtail sur fichiers (Kubernetes). Voir `docs/observability-k8s.md` pour la migration K8s.
+
+---
+
+## [2026-05-25] SOC2 — Rétention Loki corrigée (168h → 2160h)
+
+**Contexte**
+`infra/loki/loki-config.yml` avait `retention_period: 168h` (7 jours). La politique SOC2 §7.3 exige **90 jours minimum en production**.
+
+**Solution**
+```yaml
+# infra/loki/loki-config.yml
+limits_config:
+  retention_period: 2160h    # 90 jours — conforme SOC2 §7.3
+```
+
+Puis rebuild de l'image Loki (la config est baked via `infra/loki/Dockerfile`) :
+```bash
+docker compose up -d --build loki
+```
+
+**Règle à retenir**
+La config Loki est embarquée dans l'image Docker (pas de bind mount). Tout changement de config = modification du fichier source + `docker compose up -d --build loki`. Ne pas oublier de vérifier la retention après rebuild :
+```bash
+docker exec podiq-loki grep retention_period /etc/loki/config.yml
+```
+
+---
+
+## [2026-05-25] SOC2 §8.3 — Hachage passwords SHA-256 → Argon2id
+
+**Problème (sécurité)**
+Le hachage des mots de passe utilisait SHA-256+pepper (`hashlib.sha256(f"{pepper}{password}".encode()).hexdigest()`). SHA-256 est un algorithme de hash général, non conçu pour les mots de passe :
+- Pas de sel unique par appel → vulnérable aux attaques rainbow table
+- Trop rapide (milliards d'itérations/seconde sur GPU) → brute-force réaliste
+- Non conforme OWASP, NIST SP 800-63B, SOC 2 §8.3
+
+**Solution**
+Migration vers **Argon2id** avec paramètres OWASP (time=2, mem=64 MB, parallelism=2) via `argon2-cffi==23.1.0` :
+
+```python
+# services/auth-service/app/grpc_server.py
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+
+_ph = PasswordHasher(time_cost=2, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16)
+
+def _hash_password(password: str) -> str:
+    return _ph.hash(password)  # sel aléatoire unique à chaque appel
+
+def _needs_rehash(stored_hash: str) -> bool:
+    return not stored_hash.startswith("$argon2")  # True = legacy SHA-256
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    if stored_hash.startswith("$argon2"):
+        try:
+            return _ph.verify(stored_hash, password)
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            return False
+    # Legacy path — SHA-256+pepper
+    pepper = os.environ.get("DJANGO_SECRET_KEY", "")
+    legacy = hashlib.sha256(f"{pepper}{password}".encode()).hexdigest()
+    return hmac.compare_digest(legacy, stored_hash)
+```
+
+**Migration transparente** : dans `Login`, après vérification réussie :
+```python
+if _needs_rehash(user.password_hash):
+    user.password_hash = _hash_password(request.password)
+    user.save(update_fields=["password_hash"])
+    logger.info("password_rehashed_argon2id", user_id=str(user.id))
+```
+
+**Tests ajoutés**
+- `test_hash_password_is_argon2id_format` — format `$argon2id$`
+- `test_hash_password_uses_unique_salts` — 2 appels = 2 hashes différents
+- `test_needs_rehash_legacy_sha256_returns_true`
+- `test_needs_rehash_argon2id_returns_false`
+- `test_verify_legacy_sha256_correct_password` — compatibilité ascendante
+- `test_login_upgrades_legacy_sha256_to_argon2id` — migration effective
+- `test_login_does_not_rehash_already_argon2id`
+
+Résultat : **47/47 tests verts**.
+
+**Règle à retenir**
+Ne jamais utiliser SHA-1, SHA-256, MD5 pour les mots de passe. Utiliser exclusivement Argon2id (ou bcrypt/scrypt en second recours). Ajouter `argon2-cffi` aux `requirements.txt` du service, rebuilder l'image Docker après ajout.
 
 ---

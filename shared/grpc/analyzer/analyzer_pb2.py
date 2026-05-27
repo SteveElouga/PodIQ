@@ -24,27 +24,17 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17\x61nalyzer/analyzer.proto\x12\x08\x61nalyzer\"D\n\nPodRequest\x12\x10\n\x08pod_name\x18\x01 \x01(\t\x12\x11\n\tnamespace\x18\x02 \x01(\t\x12\x11\n\tlog_lines\x18\x03 \x01(\x05\"u\n\x07PodData\x12\x10\n\x08pod_name\x18\x01 \x01(\t\x12\x11\n\tnamespace\x18\x02 \x01(\t\x12\x0e\n\x06status\x18\x03 \x01(\t\x12\x0c\n\x04logs\x18\x04 \x01(\t\x12\x0e\n\x06\x65vents\x18\x05 \x01(\t\x12\x17\n\x0f\x64\x65scribe_output\x18\x06 \x01(\t\"8\n\x10NamespaceRequest\x12\x11\n\tnamespace\x18\x01 \x01(\t\x12\x11\n\ttimestamp\x18\x02 \x01(\x03\"`\n\x11NamespaceSnapshot\x12\x11\n\tnamespace\x18\x01 \x01(\t\x12\"\n\x04pods\x18\x02 \x03(\x0b\x32\x14.analyzer.PodSummary\x12\x14\n\x0c\x63ollected_at\x18\x03 \x01(\x03\"]\n\nPodSummary\x12\x10\n\x08pod_name\x18\x01 \x01(\t\x12\x0e\n\x06status\x18\x02 \x01(\t\x12\x12\n\nhas_errors\x18\x03 \x01(\x08\x12\x19\n\x11last_restart_time\x18\x04 \x01(\x03\">\n\x0fManifestRequest\x12\x14\n\x0cyaml_content\x18\x01 \x01(\t\x12\x15\n\rmanifest_type\x18\x02 \x01(\t\"\xfc\x01\n\x0eParsedManifest\x12\x15\n\rmanifest_type\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12\x11\n\tnamespace\x18\x03 \x01(\t\x12\x10\n\x08\x65nv_vars\x18\x04 \x03(\t\x12\x14\n\x0cmemory_limit\x18\x05 \x01(\t\x12\x11\n\tcpu_limit\x18\x06 \x01(\t\x12\x1a\n\x12has_liveness_probe\x18\x07 \x01(\x08\x12\x1b\n\x13has_readiness_probe\x18\x08 \x01(\x08\x12\r\n\x05image\x18\t \x01(\t\x12\x1b\n\x13image_has_fixed_tag\x18\n \x01(\x08\x12\x12\n\nraw_config\x18\x0b \x01(\t2\xd8\x01\n\x0f\x41nalyzerService\x12\x35\n\nCollectPod\x12\x14.analyzer.PodRequest\x1a\x11.analyzer.PodData\x12H\n\rScanNamespace\x12\x1a.analyzer.NamespaceRequest\x1a\x1b.analyzer.NamespaceSnapshot\x12\x44\n\rParseManifest\x12\x19.analyzer.ManifestRequest\x1a\x18.analyzer.ParsedManifestb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17\x61nalyzer/analyzer.proto\x12\x08\x61nalyzer\">\n\x0fManifestRequest\x12\x14\n\x0cyaml_content\x18\x01 \x01(\t\x12\x15\n\rmanifest_type\x18\x02 \x01(\t\"\xfc\x01\n\x0eParsedManifest\x12\x15\n\rmanifest_type\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12\x11\n\tnamespace\x18\x03 \x01(\t\x12\x10\n\x08\x65nv_vars\x18\x04 \x03(\t\x12\x14\n\x0cmemory_limit\x18\x05 \x01(\t\x12\x11\n\tcpu_limit\x18\x06 \x01(\t\x12\x1a\n\x12has_liveness_probe\x18\x07 \x01(\x08\x12\x1b\n\x13has_readiness_probe\x18\x08 \x01(\x08\x12\r\n\x05image\x18\t \x01(\t\x12\x1b\n\x13image_has_fixed_tag\x18\n \x01(\x08\x12\x12\n\nraw_config\x18\x0b \x01(\t2W\n\x0f\x41nalyzerService\x12\x44\n\rParseManifest\x12\x19.analyzer.ManifestRequest\x1a\x18.analyzer.ParsedManifestb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'analyzer.analyzer_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_PODREQUEST']._serialized_start=37
-  _globals['_PODREQUEST']._serialized_end=105
-  _globals['_PODDATA']._serialized_start=107
-  _globals['_PODDATA']._serialized_end=224
-  _globals['_NAMESPACEREQUEST']._serialized_start=226
-  _globals['_NAMESPACEREQUEST']._serialized_end=282
-  _globals['_NAMESPACESNAPSHOT']._serialized_start=284
-  _globals['_NAMESPACESNAPSHOT']._serialized_end=380
-  _globals['_PODSUMMARY']._serialized_start=382
-  _globals['_PODSUMMARY']._serialized_end=475
-  _globals['_MANIFESTREQUEST']._serialized_start=477
-  _globals['_MANIFESTREQUEST']._serialized_end=539
-  _globals['_PARSEDMANIFEST']._serialized_start=542
-  _globals['_PARSEDMANIFEST']._serialized_end=794
-  _globals['_ANALYZERSERVICE']._serialized_start=797
-  _globals['_ANALYZERSERVICE']._serialized_end=1013
+  _globals['_MANIFESTREQUEST']._serialized_start=37
+  _globals['_MANIFESTREQUEST']._serialized_end=99
+  _globals['_PARSEDMANIFEST']._serialized_start=102
+  _globals['_PARSEDMANIFEST']._serialized_end=354
+  _globals['_ANALYZERSERVICE']._serialized_start=356
+  _globals['_ANALYZERSERVICE']._serialized_end=443
 # @@protoc_insertion_point(module_scope)

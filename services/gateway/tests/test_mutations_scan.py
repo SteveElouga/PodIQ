@@ -7,7 +7,14 @@ require_auth is mocked to simulate an authenticated user.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+from graphql import GraphQLError
+
+from app.api_codes import GRAPHQL_EXTENSION_CODE, ErrorCode
+from app.auth import TokenContext
+
 MOCK_USER_ID = "user-uuid-test"
+MOCK_CTX = TokenContext(user_id=MOCK_USER_ID)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -32,6 +39,7 @@ def make_parsed_manifest(
     return SimpleNamespace(
         name=name,
         kind=kind,
+        manifest_type=kind,
         raw_config=raw_config,
         namespace="default",
         image="nginx:latest",
@@ -78,7 +86,7 @@ class TestScanManifestMutation:
         with (
             patch(
                 "app.graphql.mutations.scan_manifest.require_auth",
-                return_value=MOCK_USER_ID,
+                return_value=MOCK_CTX,
             ),
             patch(
                 "app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest",
@@ -138,7 +146,7 @@ class TestScanManifestMutation:
         with (
             patch(
                 "app.graphql.mutations.scan_manifest.require_auth",
-                return_value=MOCK_USER_ID,
+                return_value=MOCK_CTX,
             ),
             patch(
                 "app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest",
@@ -169,7 +177,7 @@ class TestScanManifestMutation:
         with (
             patch(
                 "app.graphql.mutations.scan_manifest.require_auth",
-                return_value=MOCK_USER_ID,
+                return_value=MOCK_CTX,
             ),
             patch(
                 "app.graphql.mutations.scan_manifest.analyzer_client.parse_manifest",
@@ -194,12 +202,13 @@ class TestScanManifestMutation:
 
 class TestScanManifestAuth:
     def test_raises_permission_error_without_token(self):
-        import pytest
-
         from app.graphql.mutations.scan_manifest import _scan_manifest as scan_manifest
 
-        with pytest.raises(PermissionError):
+        with pytest.raises(GraphQLError) as exc_info:
             scan_manifest(info=None, yaml_content="apiVersion: v1", manifest_type="Pod")
+        assert (
+            exc_info.value.extensions[GRAPHQL_EXTENSION_CODE] == ErrorCode.TOKEN_MISSING
+        )
 
     def test_block_risk_level_propagated(self):
         result = TestScanManifestMutation()._run(

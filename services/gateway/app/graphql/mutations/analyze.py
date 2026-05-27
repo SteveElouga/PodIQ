@@ -1,5 +1,6 @@
 import strawberry
 import structlog
+from asgiref.sync import sync_to_async
 from strawberry.types import Info
 
 from app.auth import require_auth
@@ -10,19 +11,38 @@ from core.models import AnalysisJob
 logger = structlog.get_logger()
 
 
-def _analyze_incident(info: Info, pod_name: str, namespace: str) -> AnalysisJobType:
-    user_id = require_auth(info)
+def _analyze_incident(
+    info: Info,
+    pod_name: str,
+    namespace: str,
+    logs: str,
+    events: str,
+    describe_output: str,
+) -> AnalysisJobType:
+    ctx = require_auth(info)
     logger.info(
-        "mutation_analyze_incident", pod=pod_name, namespace=namespace, user_id=user_id
+        "mutation_analyze_incident",
+        pod=pod_name,
+        namespace=namespace,
+        user_id=ctx.user_id,
     )
 
     job = AnalysisJob.objects.create(
-        user_id=user_id,
+        user_id=ctx.user_id,
+        workspace_id=ctx.workspace_id,
         pod_name=pod_name,
         namespace=namespace,
     )
 
-    analyze_incident_task.send(str(job.id), user_id, pod_name, namespace)
+    analyze_incident_task.send(
+        str(job.id),
+        str(ctx.workspace_id or ctx.user_id),
+        pod_name,
+        namespace,
+        logs,
+        events,
+        describe_output,
+    )
 
     logger.info("task_enqueued", job_id=str(job.id), pod=pod_name, namespace=namespace)
 
@@ -36,5 +56,14 @@ def _analyze_incident(info: Info, pod_name: str, namespace: str) -> AnalysisJobT
 
 
 @strawberry.mutation
-def analyze_incident(info: Info, pod_name: str, namespace: str) -> AnalysisJobType:
-    return _analyze_incident(info, pod_name, namespace)
+async def analyze_incident(
+    info: Info,
+    pod_name: str,
+    namespace: str,
+    logs: str = "",
+    events: str = "",
+    describe_output: str = "",
+) -> AnalysisJobType:
+    return await sync_to_async(_analyze_incident)(
+        info, pod_name, namespace, logs, events, describe_output
+    )

@@ -51,6 +51,7 @@ def make_parsed_manifest(
     return SimpleNamespace(
         name="my-app",
         kind="Deployment",
+        manifest_type="Deployment",
         raw_config=raw_config,
         namespace="default",
     )

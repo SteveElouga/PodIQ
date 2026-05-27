@@ -5,7 +5,7 @@
 Imagine la **réception d'un hôpital de haut niveau**.
 
 - Les clients (frontend Angular, CLI, pipelines CI/CD) arrivent à la réception et font leur demande. Ils ne savent pas comment l'hôpital est organisé en interne — ils parlent uniquement à la réceptionniste.
-- La réceptionniste (le Gateway) **comprend la demande**, **contacte les bons services** dans le bon ordre (le technicien de terrain d'abord, puis le médecin expert), et **assemble la réponse finale** à remettre au client.
+- La réceptionniste (le Gateway) **comprend la demande**, **contacte les bons services** dans le bon ordre, et **assemble la réponse finale** à remettre au client.
 - Si le client veut s'identifier, la réceptionniste transmet ses informations au **service d'accueil/sécurité** (auth-service) et retourne le badge d'accès.
 - La réceptionniste ne fait **aucun diagnostic** elle-même — elle orchestre et transmet.
 
@@ -14,419 +14,202 @@ Imagine la **réception d'un hôpital de haut niveau**.
 ## Responsabilité
 
 Le Gateway est le **seul point d'entrée** de PodIQ pour les clients externes. Il est responsable de :
-- Exposer une **API GraphQL** sur `/graphql` (pour le frontend et la CLI)
-- Orchestrer les appels gRPC entre les services backend dans le bon ordre
-- Assembler les résultats et les retourner au client dans le format GraphQL attendu
-- Déléguer l'authentification à l'auth-service
-- Exposer un endpoint **REST** sur `/api/v1/cicd/scan` pour les pipelines CI/CD (auth via `X-Api-Key`, exit codes 0/1/2)
 
-Il ne fait **aucun appel direct à Kubernetes**, **aucun appel à Ollama**, et **n'accède à aucune base de données autre que la sienne** (sessions Django).
+- Exposer une **API GraphQL** sur `/graphql` (queries, mutations, subscriptions WebSocket)
+- Gérer l'authentification en **deux temps** : user-JWT (auth-service) → workspace-JWT (gateway)
+- Gérer les **workspaces multi-tenant** : création, sélection, membres, invitations
+- Réceptionner les heartbeats et incidents de l'**agent K8s** via mutations GraphQL
+- Orchestrer les appels gRPC entre les services backend
+- Envoyer des **notifications** (Slack, PagerDuty, email, webhook, Teams, Discord) via Dramatiq
+- Exposer un endpoint **REST** sur `/api/v1/cicd/scan` (auth via `X-Api-Key`, exit codes 0/1/2)
 
----
-
-## Base de données
-
-Ce service possède sa propre instance PostgreSQL : **`postgres-gateway`** (port 5432).
-
-Elle contient les tables internes à Django et les jobs d'analyse asynchrones :
-- `django_session` — sessions web (si utilisées)
-- Tables d'administration Django (si activées)
-- `analysis_jobs` — jobs d'analyse de pods (UUID PK, statut `pending/running/complete/failed`, résultat JSON, erreur texte, horodatages)
+Il ne fait **aucun appel direct à Kubernetes**, **aucun appel à Ollama**, et **n'accède à aucune base de données autre que la sienne**.
 
 ---
 
-## Interface GraphQL
+## Architecture ASGI
 
-Le Gateway expose une API GraphQL sur **`http://localhost:8080/graphql`**.
+Depuis la phase 16, le Gateway tourne sous **Uvicorn (ASGI)** — non plus Gunicorn (WSGI). Cela permet les subscriptions GraphQL via WebSocket.
 
-Le playground interactif est disponible à la même URL (en GET).
+### Routage ASGI (`config/asgi.py`)
+
+```
+Request HTTP/WS
+      │
+      ▼
+application(scope, receive, send)   ← ASGI router custom
+      │
+      ├─ path == "/graphql"  ──►  strawberry.asgi.GraphQL   (HTTP + WebSocket)
+      │                           └─ wrappé dans CORSMiddleware (starlette)
+      │
+      └─ autres paths  ──────►  get_asgi_application()      (Django : healthz, CI/CD REST)
+```
+
+**Pourquoi `strawberry.asgi.GraphQL` plutôt que `AsyncGraphQLView` pour `/graphql` ?**
+
+`AsyncGraphQLView` (Django) gère uniquement HTTP. Pour le protocole WebSocket `graphql-ws` (subscriptions depuis le playground), il faut `strawberry.asgi.GraphQL` (Starlette-based) qui gère les deux.
+
+> **Piège rencontré :** `uvicorn` de base ne supporte pas WebSocket — le log indiquait
+> `No supported WebSocket library detected`. Fix : `uvicorn[standard]` dans `requirements.txt`
+> (installe `websockets` automatiquement).
 
 ---
 
-## Mutations disponibles
+## Authentification — JWT deux étapes
 
-### `analyzeIncident` — Analyser un incident Kubernetes (asynchrone)
+### Étape 1 — User-JWT (auth-service)
 
-Déclenche une analyse complète d’un pod en échec. **L’appel retourne immédiatement** un `jobId` ; l’analyse tourne en arrière-plan via Dramatiq. Le client doit ensuite poller `analysisJob(jobId)` pour suivre l’avancement.
-
-**Entrée :**
 ```graphql
-mutation {
-  analyzeIncident(podName: "mon-pod", namespace: "default") {
-    jobId
-    status
-    createdAt
-  }
-}
+mutation { login(email, password) { token userId email } }
 ```
 
-**Ce que le Gateway fait en interne (mutation) :**
+Retourne un JWT léger signé par auth-service : `{ user_id, email, iat, exp }`.
 
-```
-1. Crée un AnalysisJob en base (status=pending)
-2. Enfile analyze_incident_task via Dramatiq → Redis
-3. Retourne AnalysisJobType{jobId, status="pending", result=null, error=null, createdAt}
-   (retour immédiat — pas d’attente gRPC)
-```
+### Étape 2 — Workspace-JWT (gateway)
 
-**Ce que le worker Dramatiq fait en arrière-plan (`gateway-worker`) :**
-
-```
-1. analyzer_client.collect_pod(pod_name, namespace)  [status → running]
-   └── L’analyzer-service va chercher logs + events dans Kubernetes
-
-2. analyzer_client.scan_namespace(namespace, timestamp)
-   └── L’analyzer-service liste tous les pods du namespace
-
-3. Construit le namespace_context (corrélation temporelle)
-   └── Fenêtre configurable : CORRELATION_WINDOW_MINUTES (défaut 15 min)
-   └── Chaque pod reçoit in_correlation_window, seconds_before_reference
-
-4. Memory Engine — ai_client.get_history(pod_name, namespace, limit=5)
-   └── Récupère les 5 derniers incidents connus pour ce pod/namespace
-   └── Transforme en PastIncident[] pour injection dans le prompt IA
-
-5. ai_client.analyze_incident(request avec history injecté)
-   └── Ollama voit les incidents passés → identifie récurrences, affine la cause
-   └── Upsert dans incident_patterns (compteur d’occurrences)
-
-6. Persiste le résultat → AnalysisJob{status=complete, result={...}}
-   En cas d’erreur → AnalysisJob{status=failed, error="..."}
-```
-
-**Sortie immédiate (mutation) :**
-```
-jobId     : ID     — UUID du job, à utiliser pour poller
-status    : String — toujours "pending" au retour de la mutation
-result    : null   — pas encore disponible
-error     : null
-createdAt : String — ISO 8601
-```
-
-**Flux complet côté client :**
-```
-1. mutation analyzeIncident → jobId
-2. query analysisJob(jobId) → status="pending"|"running"  (poller toutes les 2–5 s)
-3. query analysisJob(jobId) → status="complete", result={...}
-   ou                       → status="failed",   error="..."
-```
-
-**Pourquoi le Memory Engine est dans le Gateway et non dans l’AI Service ?**
-
-Le Gateway est responsable de l’orchestration : il décide dans quel ordre appeler les services et quelles données assembler. L’AI Service reste pur — il reçoit toutes les données déjà préparées et se concentre uniquement sur l’analyse.
-
----
-
-### `scanManifest` — Scanner un manifest avant déploiement
-
-Analyse un fichier YAML Kubernetes pour détecter des risques de configuration.
-
-**Entrée :**
 ```graphql
-mutation {
-  scanManifest(yamlContent: "<contenu yaml>", manifestType: "Deployment") {
-    riskLevel
-    summary
-    risks {
-      severity
-      category
-      description
-      fix
-    }
-  }
-}
+mutation { selectWorkspace(workspaceId: "...") { token workspaceId role } }
 ```
 
-**Ce que le Gateway fait en interne :**
-
-```
-1. analyzer_client.parse_manifest(yaml_content, manifest_type)
-   └── L'analyzer-service parse et structure le YAML
-
-2. Memory Engine — ai_client.get_history(pod_name=manifest_name, namespace, limit=5)
-   └── Récupère les incidents passés liés à ce manifest/namespace
-   └── Si ai-service indisponible → dégradation gracieuse, history=[] (scan non bloqué)
-
-3. ai_client.scan_manifest(parsed_manifest, user_id, manifest_name, manifest_namespace, manifest_type, related_history)
-   └── L'AI Service envoie à Ollama pour détecter les risques, enrichi par l'historique
-   └── Persiste le résultat dans postgres-ai (analysis_type="predeploy")
-
-4. Retourne ManifestScanResultType
-```
-
-**Sortie :**
-```
-riskLevel : String     — "safe" | "warning" | "block"
-summary   : String     — résumé en langage naturel
-risks     : [RiskItem] — liste des risques détectés
-  severity    : String  — "low" | "medium" | "high" | "critical"
-  category    : String  — "missing_env" | "probe" | "image_tag" | "memory" | "security"
-  description : String
-  fix         : String
-```
-
----
-
-### `register` — Créer un compte utilisateur
-
-**Entrée :**
-```graphql
-mutation {
-  register(email: "user@example.com", password: "secret123") {
-    token
-    userId
-    email
-  }
-}
-```
-
-**Ce que le Gateway fait en interne :**
-```
-0. Validation du format email (_validate_email)
-   └── Regex RFC : doit contenir @, domaine, TLD ≥ 2 chars
-   └── Si invalide → GraphQLError PODIQ_VALIDATION_ERROR (sans appel gRPC)
-
-1. auth_client.register(email, password)
-   └── L'auth-service crée l'utilisateur et génère le JWT
-
-2. Retourne AuthPayload
-```
-
-**Sortie :**
-```
-token  : String  — JWT valide 24h, à conserver côté client
-userId : String  — UUID de l'utilisateur
-email  : String
-```
-
----
-
-### `login` — Se connecter
-
-**Entrée :**
-```graphql
-mutation {
-  login(email: "user@example.com", password: "secret123") {
-    token
-    userId
-    email
-  }
-}
-```
-
-**Sortie :** Identique à `register`.
-
-> La validation du format email s'applique aussi à `login` — un email invalide retourne `PODIQ_VALIDATION_ERROR` sans appel gRPC.
-
----
-
-### `createApiKey` — Créer une clé API (CI/CD)
-
-Nécessite un JWT valide (`Authorization: Bearer <token>`). Retourne la clé brute **une seule fois** — à copier immédiatement.
-
-**Entrée :**
-```graphql
-mutation {
-  createApiKey(name: "github-actions-prod") {
-    keyId
-    rawKey
-    name
-    createdAt
-  }
-}
-```
-
-**Ce que le Gateway fait en interne :**
-```
-1. require_auth(info) → vérifie le JWT, extrait user_id
-2. auth_client.create_api_key(user_id, name)
-   └── auth-service génère une clé aléatoire (secrets.token_urlsafe(32))
-   └── Stocke le hash SHA-256 dans api_keys, retourne la clé brute une seule fois
-3. Retourne ApiKeyPayload{keyId, rawKey, name, createdAt}
-```
-
-**Sortie :**
-```
-keyId     : String  — UUID de la clé (pour revokeApiKey)
-rawKey    : String  — clé brute (ex: "abc123...") — à conserver, non récupérable ensuite
-name      : String  — nom donné à la clé
-createdAt : String  — ISO 8601
-```
-
-> **Important :** `rawKey` n'est jamais stocké en clair côté serveur (SHA-256). Si vous le perdez, révoquez la clé et créez-en une nouvelle.
-
----
-
-### `revokeApiKey` — Révoquer une clé API
-
-**Entrée :**
-```graphql
-mutation {
-  revokeApiKey(keyId: "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb")
-}
-```
-
-**Sortie :** `Boolean` — `true` si révoquée, `false` si introuvable.
-
-Le Gateway vérifie que la clé appartient bien à l'utilisateur authentifié (via `user_id` extrait du JWT) avant de la révoquer.
-
----
-
-## Queries disponibles
-
-### `analysisJob` — Suivre l'état d'un job d'analyse
-
-Retourne l'état courant d'un job créé par `analyzeIncident`. À appeler en polling jusqu'à `status="complete"` ou `"failed"`.
-
-**Entrée :**
-```graphql
-query {
-  analysisJob(jobId: "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb") {
-    jobId
-    status
-    result {
-      errorType
-      rootCause
-      explanation
-      solution
-      confidence
-      isRecurring
-      recurrenceCount
-      correlatedService
-      correlationExplanation
-    }
-    error
-    createdAt
-  }
-}
-```
-
-**Statuts possibles :**
-| `status`    | Signification |
-|-------------|---------------|
-| `pending`   | En attente dans la file Dramatiq |
-| `running`   | Worker en cours d'exécution |
-| `complete`  | Analyse terminée — `result` est renseigné |
-| `failed`    | Erreur — `error` contient le message |
-
-**Sécurité :** le job n'est visible que par l'utilisateur qui l'a créé. Un autre `userId` reçoit `GraphQLError("Job not found")`.
-
----
-
-### `analysisHistory` — Consulter l'historique d'un pod ou manifest
-
-**Entrée :**
-```graphql
-query {
-  analysisHistory(
-    podName: "mon-pod"
-    namespace: "default"
-    limit: 10
-    analysisType: "incident"   # optionnel : "" | "incident" | "predeploy"
-  ) {
-    id
-    podName
-    namespace
-    errorType
-    rootCause
-    solution
-    confidence
-    isRecurring
-    recurrenceCount
-    createdAt
-    analysisType
-    riskLevel
-  }
-}
-```
-
-**Ce que le Gateway fait en interne :**
-```
-1. ai_client.get_history(pod_name, namespace, limit, analysis_type)
-   └── Si analysis_type="" → retourne incidents + predeploy
-   └── Si analysis_type="predeploy" → uniquement les scans manifest
-
-2. Convertit les unix timestamps en ISO 8601 (ex: "2026-05-11T14:32:00")
-
-3. Retourne [AnalysisHistoryItem]
-```
-
----
-
-## Endpoint REST CI/CD
-
-### `POST /api/v1/cicd/scan` — Scanner un manifest depuis un pipeline
-
-Endpoint REST dédié aux pipelines CI/CD. Authentification par **API Key** (pas de JWT).
-
-**Headers :**
-```
-X-Api-Key: <clé brute créée via CreateApiKey>
-Content-Type: application/json
-```
-
-**Body JSON :**
+Gateway vérifie le user-JWT via gRPC, récupère le `WorkspaceMember` en base, et signe un JWT enrichi avec `GATEWAY_JWT_SECRET` :
 ```json
-{
-  "yaml_content": "<contenu du manifest YAML>",
-  "manifest_type": "Deployment"
-}
-```
-`manifest_type` est optionnel.
-
-**Réponse 200 :**
-```json
-{
-  "exit_code": 0,
-  "risk_level": "safe",
-  "summary": "No critical issues found.",
-  "risks": []
-}
+{ "user_id": "...", "email": "...", "workspace_id": "...", "role": "admin", "exp": ... }
 ```
 
-**Exit codes :**
-| Code | `risk_level` | Signification |
-|------|-------------|---------------|
-| `0`  | `safe`      | Déploiement autorisé |
-| `1`  | `warning`   | Déploiement autorisé, révision recommandée |
-| `2`  | `block`     | Déploiement bloqué — risques critiques détectés |
+**Ce workspace-JWT est décodé localement (fast path)** dans `require_auth()` sans appel gRPC.
 
-**Erreurs :**
-| HTTP | `code` | Cause |
-|------|--------|-------|
-| `401` | `PODIQ_TOKEN_MISSING` | Header `X-Api-Key` absent |
-| `401` | `PODIQ_TOKEN_INVALID` | Clé invalide ou révoquée |
-| `400` | `PODIQ_VALIDATION_ERROR` | `yaml_content` absent ou YAML invalide |
-| `502` | `PODIQ_AUTH_GRPC_ERROR` | auth-service indisponible |
-| `502` | `PODIQ_ANALYZER_GRPC_ERROR` | analyzer-service indisponible |
-| `502` | `PODIQ_AI_GRPC_ERROR` | AI service indisponible |
+### Refresh token (cookie httpOnly)
 
-**Ce que le Gateway fait en interne :**
+- Mis en place automatiquement par `selectWorkspace` et `login`
+- Cookie `refresh_token` : `HttpOnly`, `Secure` (prod), `SameSite=Strict`, path `/graphql`
+- Rotation à chaque appel → `refreshToken` mutation retourne un nouveau access token + rotate le cookie
+- Durée : `GATEWAY_REFRESH_EXPIRY_DAYS` (défaut 30 jours)
+
+### `require_auth()` — `app/auth.py`
+
+Retourne un `TokenContext(user_id, email, workspace_id, role)`.
+
+Lève **toujours `GraphQLError`** (jamais `PermissionError`) avec un code machine dans `extensions["code"]` :
+| Cas | Code `extensions["code"]` |
+|-----|--------------------------|
+| Header absent ou format non-Bearer | `PODIQ_TOKEN_MISSING` |
+| Token vide | `PODIQ_TOKEN_MISSING` |
+| JWT invalide / expiré (gRPC) | `PODIQ_TOKEN_INVALID` |
+
+Gère **trois layouts de contexte Strawberry** :
+| Contexte | Cas | Extraction |
+|----------|-----|-----------|
+| `dict{"request": ...}` HTTP | ASGI / Django view | `ctx["request"].headers["Authorization"]` |
+| `dict{"connection_params": ...}` WS | WebSocket subscription | `ctx["connection_params"]["Authorization"]` |
+| Objet avec `.request` | Legacy fallback | `ctx.request.headers["Authorization"]` |
+
+> **Piège rencontré :** `AsyncGraphQLView` retourne un dict `{"request": ..., "response": ...}`.
+> `hasattr(ctx, "request")` retourne `False` sur un dict Python → le token n'était jamais lu.
+> Fix : vérifier `isinstance(ctx, dict)` en premier, puis chercher `connection_params` (WebSocket)
+> avant les headers HTTP.
+
+---
+
+## Gestion des erreurs de token — Arbres de décision
+
+### Phase 1 — User-JWT (post-login, avant selectWorkspace)
+
+Le user-JWT est un credential de transition : il ne sert qu'à `createWorkspace` et `selectWorkspace`.
+**Il n'existe pas de mécanisme de refresh pour le user-JWT** — expiration = reconnexion obligatoire.
+
 ```
-1. Vérifie X-Api-Key → auth_client.validate_api_key(raw_key)
-   └── auth-service vérifie le hash SHA-256 et le statut is_active
-
-2. analyzer_client.parse_manifest(yaml_content, manifest_type)
-   └── L'analyzer-service structure le YAML
-
-3. ai_client.scan_manifest(parsed.raw_config, user_id, manifest_name, manifest_namespace, manifest_type, related_history=[])
-   └── L'AI Service détecte les risques via Ollama
-   └── Persiste le résultat dans postgres-ai (analysis_type="predeploy")
-
-4. Mappe risk_level → exit_code et retourne JSON
+Appel avec user-JWT
+        │
+        ├─ PODIQ_TOKEN_MISSING  →  rediriger vers /login
+        ├─ PODIQ_TOKEN_INVALID  →  rediriger vers /login
+        │   (expiré après 24h, signature invalide, token vide)
+        └─ Succès               →  continuer l'onboarding
 ```
 
-**Exemple curl :**
-```bash
-curl -X POST http://localhost:8080/api/v1/cicd/scan \
-  -H "X-Api-Key: <votre-clé>" \
-  -H "Content-Type: application/json" \
-  -d '{"yaml_content": "apiVersion: apps/v1\nkind: Deployment\n..."}'
+**Pourquoi pas de refresh pour le user-JWT ?**
+Le user-JWT est transitoire par conception : il expire en 24h (env `JWT_EXPIRY_MINUTES=1440` dans
+auth-service). Sa seule raison d'être est d'obtenir un workspace-JWT via `selectWorkspace`.
+Gérer un refresh cycle pour lui ajouterait de la complexité sans bénéfice réel — si l'utilisateur
+met 24h entre son `login` et son `selectWorkspace`, il re-login simplement.
 
-# Exit code pipeable :
-RESULT=$(curl -s ... | jq '.exit_code')
-exit $RESULT
+### Phase 2 — Workspace-JWT (post-selectWorkspace, opérations métier)
+
 ```
+Appel avec workspace-JWT
+        │
+        ├─ PODIQ_TOKEN_MISSING  →  rediriger vers /login (re-login complet)
+        │
+        ├─ PODIQ_TOKEN_INVALID  →  appeler mutation { refreshToken }
+        │   (workspace-JWT expiré après 1h)       │
+        │                               ┌──────────┴──────────┐
+        │                         Succès (cookie OK)     Échec (cookie expiré/absent)
+        │                               │                      │
+        │                      retry l'appel original   re-login → selectWorkspace
+        │
+        ├─ PODIQ_FORBIDDEN      →  afficher message "droits insuffisants"
+        │   (authentifié mais pas admin, etc.)     Ne jamais déconnecter — l'utilisateur
+        │                                          est valide, juste pas autorisé pour cette action
+        │
+        └─ PODIQ_AUTH_GRPC_ERROR  →  afficher "service temporairement indisponible", retry
+```
+
+### Re-login avec onboarding incomplet
+
+Quand l'utilisateur se reconnecte (user-JWT obtenu) et n'a pas encore fini l'onboarding :
+
+```
+login → user-JWT obtenu
+        │
+        ▼
+listWorkspaces (avec user-JWT)
+        │
+        ├─ 0 workspace          →  rediriger vers createWorkspace (premier onboarding)
+        │
+        ├─ 1 workspace
+        │       │
+        │       └─ onboarded_at is null  →  selectWorkspace → workspace-JWT
+        │                                   → rediriger vers wizard installation agent
+        │           (onboarded_at not null) →  selectWorkspace → accès normal
+        │
+        └─ N workspaces
+                │
+                ├─ Présenter la liste de sélection au frontend
+                │   (chaque workspace indique si onboarded_at is null)
+                │
+                └─ Après sélection → selectWorkspace → workspace-JWT
+                    → si onboarded_at is null : wizard agent pour ce workspace
+                    → sinon : accès normal
+```
+
+> **Signal canonique** : `workspace.onboarded_at` est posé par le backend automatiquement
+> au **premier `agentHeartbeat`** reçu pour ce workspace. Le frontend ne doit jamais
+> le poser lui-même — il se contente de le lire.
+
+---
+
+## Base de données — `postgres-gateway`
+
+### Tables
+
+| Table | Description |
+|-------|-------------|
+| `analysis_jobs` | Jobs d'analyse async (UUID PK, user_id, workspace_id, status, result JSON) |
+| `workspaces` | Tenants (UUID PK, owner_id, name, slug, plan, region, team_size, accent_color) |
+| `workspace_members` | Rôles par workspace (workspace FK, user_id UUID, role admin/member/viewer) |
+| `install_tokens` | Tokens d'install agent (workspace FK, token `wsk_xxx`, expires_at, used) |
+| `clusters` | Clusters K8s enregistrés (workspace FK, install_token FK, name, k8s_version, status, last_heartbeat) |
+| `invitations` | Invitations membres (workspace FK, email, token UUID, role, status, expires_at) |
+| `alert_rules` | Règles de notification (workspace FK, event_type, enabled) |
+| `notification_channels` | Destinations (workspace FK, type, config JSON, enabled) |
+| `quiet_hours` | Fenêtre de silence (workspace OneToOne, start/end time, timezone) |
+
+### Migrations
+
+| Fichier | Contenu |
+|---------|---------|
+| `0001_initial.py` | `analysis_jobs` |
+| `0002_workspace.py` | `workspaces`, `workspace_members`, `install_tokens`, `clusters` |
+| `0003_invitations_alerts.py` | `invitations`, `alert_rules`, `notification_channels`, `quiet_hours` |
 
 ---
 
@@ -434,191 +217,489 @@ exit $RESULT
 
 ```
 Query
-├── analysisJob(jobId) → AnalysisJobType          ← polling async
-└── analysisHistory(podName, namespace, limit, analysisType?) → [AnalysisHistoryItem]
+├── analysisJob(jobId) → AnalysisJobType
+├── analysisHistory(podName, namespace, limit, analysisType?) → [AnalysisHistoryItem]
+├── listWorkspaces() → [WorkspaceType]
+├── currentWorkspace() → WorkspaceType
+├── clusterStatus(workspaceId) → [ClusterType]
+└── listInvitations(workspaceId, status?) → [InvitationPayload]
 
 Mutation
-├── analyzeIncident(podName, namespace) → AnalysisJobType  ← retourne immédiatement (async)
-├── scanManifest(yamlContent, manifestType) → ManifestScanResultType
-├── register(email, password) → AuthPayload
-├── login(email, password) → AuthPayload
-├── createApiKey(name) → ApiKeyPayload         ← JWT requis
-└── revokeApiKey(keyId) → Boolean              ← JWT requis
+├── ── Auth ──────────────────────────────────────────────────────
+│   register(email, password) → AuthPayload
+│   login(email, password) → AuthPayload
+│   createApiKey(name) → ApiKeyPayload
+│   revokeApiKey(keyId) → Boolean
+│
+├── ── Workspace ─────────────────────────────────────────────────
+│   createWorkspace(name, region?, teamSize?, accentColor?) → WorkspaceType
+│   selectWorkspace(workspaceId) → WorkspaceAuthPayload   ← émet workspace-JWT + cookie
+│   refreshToken() → WorkspaceAuthPayload                 ← lit le cookie httpOnly
+│   updateWorkspace(workspaceId, name?, accentColor?, teamSize?) → WorkspaceType
+│
+├── ── Analysis ──────────────────────────────────────────────────
+│   analyzeIncident(podName, namespace) → AnalysisJobType  (async)
+│   scanManifest(yamlContent, manifestType?) → ManifestScanResultType
+│
+├── ── Agent ─────────────────────────────────────────────────────
+│   generateInstallToken(workspaceId) → InstallTokenPayload
+│   agentHeartbeat(installToken, clusterName, k8sVersion?) → ClusterType
+│   agentReportIncident(installToken, podName, namespace, logs?, events?, describeOutput?) → AnalysisJobType
+│
+├── ── Invitations ───────────────────────────────────────────────
+│   inviteMember(workspaceId, email, role?) → InvitationPayload
+│   revokeInvitation(invitationId) → Boolean
+│   acceptInvitation(token) → WorkspaceAuthPayload
+│   generateInviteLink(workspaceId) → InvitationPayload
+│
+└── ── Notifications ─────────────────────────────────────────────
+    createAlertRule(workspaceId, eventType, name?) → AlertRuleType
+    toggleAlertRule(ruleId, enabled) → AlertRuleType
+    connectChannel(workspaceId, channelType, config) → ChannelPayload
+    disconnectChannel(channelId) → Boolean
+    setQuietHours(workspaceId, enabled, startTime, endTime, timezone?, weekdaysOnly?) → QuietHoursType
 
-REST
-└── POST /api/v1/cicd/scan → {exit_code, risk_level, summary, risks[]}
+Subscription  (WebSocket — protocole graphql-ws)
+├── clusterConnected(workspaceId) → ClusterType   ← poll DB toutes les 2s
+└── jobStatus(jobId) → AnalysisJobType            ← poll DB toutes les 3s
 ```
 
 ---
 
-## Clients gRPC internes
+## Détail des mutations — Auth & Workspace
 
-Le Gateway maintient un client gRPC léger pour chaque service backend.
+### `register` / `login`
 
-| Client               | Service cible     | Port  | Méthodes                                        |
-|----------------------|-------------------|-------|-------------------------------------------------|
-| `analyzer_client.py` | analyzer-service  | 50052 | `collect_pod`, `scan_namespace`, `parse_manifest`|
-| `ai_client.py`       | ai-service        | 50053 | `analyze_incident`, `scan_manifest`, `get_history`|
-| `auth_client.py`     | auth-service      | 50051 | `register`, `login`, `validate_api_key`, `create_api_key`, `revoke_api_key` |
+Validation email par regex avant tout appel gRPC. Un email invalide retourne `PODIQ_VALIDATION_ERROR` sans appel réseau.
 
-Chaque appel gRPC ouvre un canal dédié (simple, sans pool — à optimiser avec Redis en Étape 11).
-
-### Processus HTTP et timeouts
-
-La chaîne de timeouts est configurée pour couvrir l’inférence Ollama sur CPU :
-
-| Couche | Valeur | Fichier |
-|--------|--------|---------|
-| Nginx `proxy_connect_timeout` | 10 s | `infra/nginx/default.conf` |
-| Nginx `proxy_read_timeout` | **180 s** | `infra/nginx/default.conf` |
-| Gunicorn `--timeout` | **180 s** | `services/gateway/Dockerfile` |
-
-`analyzeIncident` est **asynchrone** — retour immédiat, pas de blocage worker. `scanManifest` reste **synchrone** : attend la fin de l’inférence Ollama. Si Ollama dépasse 180 s, le client reçoit `grpc_message: "timed out"` (GraphQL error) et non une page HTML 504.
-
-### Worker Dramatiq (`gateway-worker`)
-
-Le worker est lancé via `worker_main.py` qui :
-1. Initialise Django (`django.setup()`) avant d’importer les acteurs Dramatiq — sans cela, l’import de `core.models` lève `AppRegistryNotReady`
-2. Enregistre `JobFailureMiddleware` : si une tâche épuise ses retries sans jamais atteindre le bloc `except` (ex. crash au démarrage), le middleware marque automatiquement le job `failed` en base
-
-```bash
-# Commande dans docker-compose.yml
-python -m dramatiq worker_main --processes 2 --threads 4
+```graphql
+mutation { register(email: "user@example.com", password: "MotDePasse123!") { token userId email } }  # pragma: allowlist secret
+mutation { login(email: "user@example.com", password: "MotDePasse123!") { token userId email } }  # pragma: allowlist secret
 ```
 
-Les acteurs sont configurés avec `max_retries=2, time_limit=300_000` (5 min).
+Le token retourné est un **user-JWT** (auth-service) — valide uniquement pour `selectWorkspace`.
+
+### `createWorkspace`
+
+Nécessite un user-JWT ou workspace-JWT. Crée le workspace et ajoute le créateur comme `admin`.
+
+```graphql
+mutation {
+  createWorkspace(name: "Acme SRE", region: "eu", teamSize: "2_10") {
+    id slug plan role createdAt
+  }
+}
+```
+
+### `selectWorkspace`
+
+Échange le user-JWT contre un workspace-JWT + pose le cookie refresh.
+
+```graphql
+mutation {
+  selectWorkspace(workspaceId: "649eec90-...") {
+    token workspaceId role userId email
+  }
+}
+```
+
+### `refreshToken`
+
+Lit le cookie `refresh_token` (httpOnly), valide, retourne un nouveau access token + rotate le cookie.
+
+```graphql
+mutation { refreshToken { token workspaceId role } }
+```
+
+---
+
+## Détail des mutations — Agent
+
+L'agent K8s s'authentifie via `installToken` dans le payload — il n'a pas de JWT utilisateur.
+
+### `generateInstallToken`
+
+Génère un token `wsk_xxx` valide 24h. L'admin copie ce token dans le Helm chart.
+
+```graphql
+mutation { generateInstallToken(workspaceId: "...") { token expiresAt } }
+```
+
+### `agentHeartbeat`
+
+Appelé par l'agent au démarrage et périodiquement. Crée ou met à jour le `Cluster`.
+
+```graphql
+mutation {
+  agentHeartbeat(installToken: "wsk_xxx", clusterName: "prod-eu", k8sVersion: "1.29") {
+    id name status lastHeartbeat
+  }
+}
+```
+
+> **Note implémentation :** le flag `used=True` sur l'`InstallToken` signifie « cluster enregistré »,
+> pas « token invalidé ». L'agent réutilise le même token pour tous ses appels ultérieurs.
+> `_resolve_install_token()` vérifie uniquement l'expiration, pas le flag `used`.
+
+> **`onboarded_at` — signal de fin d'onboarding :** au **premier** heartbeat d'un cluster
+> (`Cluster` créé = `created=True`), le gateway pose automatiquement
+> `workspace.onboarded_at = now()` **si et seulement si** `workspace.onboarded_at is None`.
+> Ce champ est immuable une fois posé (ajout d'un second cluster ne l'écrase pas).
+> Le frontend consulte `onboarded_at` pour savoir si l'utilisateur doit encore passer
+> par le wizard d'installation agent.
+
+### `agentReportIncident`
+
+L'agent envoie un incident détecté. Crée un `AnalysisJob` et l'enfile dans Dramatiq.
+
+```graphql
+mutation {
+  agentReportIncident(
+    installToken: "wsk_xxx"
+    podName: "api-pod"
+    namespace: "production"
+    logs: "..."
+    events: "..."
+  ) { jobId status }
+}
+```
+
+L'agent collecte `logs`, `events`, `describeOutput` et `namespacePods` directement dans le cluster via `kubectl`, puis les envoie dans ce payload. Le worker Dramatiq (`analyze_incident_task`) les reçoit et construit le contexte namespace (`_build_namespace_context`) pour la corrélation temporelle avant de les transmettre à l'AI Service.
+
+---
+
+## Détail des mutations — Invitations
+
+### `inviteMember`
+
+Admin uniquement. Révoque tout invite pending existant pour le même email+workspace, puis crée un nouvel invite.
+
+```graphql
+mutation {
+  inviteMember(workspaceId: "...", email: "colleague@test.com", role: "member") {
+    id
+    token   # UUID à mettre dans le lien /join?token=xxx
+    status
+    expiresAt
+  }
+}
+```
+
+> **Important :** le champ `id` et le champ `token` sont deux UUID distincts.
+> `acceptInvitation` attend le champ **`token`**, pas l'`id`.
+
+### `acceptInvitation`
+
+Accepte l'invitation et retourne directement un workspace-JWT + cookie refresh.
+Ne rétrograde jamais un rôle existant (admin ne peut pas être ramené à member).
+
+```graphql
+mutation {
+  acceptInvitation(token: "b1eceb49-5c7f-40dd-b94c-622a34b64197") {
+    token workspaceId role
+  }
+}
+```
+
+> **Bug corrigé :** `update_or_create` avec `defaults={"role": invite.role}` écrasait le rôle
+> même si le membre était déjà admin. Remplacé par `get_or_create` + upgrade uniquement si
+> le nouveau rôle est plus élevé (`_ROLE_PRIORITY` : viewer=1, member=2, admin=3).
+
+### `generateInviteLink`
+
+Crée une invitation sans email cible (lien ouvert, rôle `member` par défaut).
+
+---
+
+## Subscriptions WebSocket
+
+Le playground à `http://localhost:8080/graphql` supporte les subscriptions via WebSocket.
+Pour envoyer le token d'authentification, utiliser la section **Headers** du playground :
+```json
+{ "Authorization": "Bearer <workspace-JWT>" }
+```
+GraphiQL envoie ce header comme payload du message `connection_init` (protocole `graphql-ws`).
+Strawberry expose ce payload dans `info.context["connection_params"]`.
+
+### `clusterConnected`
+
+Reste ouvert jusqu'à ce qu'un cluster avec `status=CONNECTED` apparaisse dans le workspace.
+
+```graphql
+subscription {
+  clusterConnected(workspaceId: "649eec90-...") {
+    id name status k8sVersion lastHeartbeat
+  }
+}
+```
+
+### `jobStatus`
+
+Pousse les mises à jour d'un job jusqu'à `complete` ou `failed`.
+
+```graphql
+subscription {
+  jobStatus(jobId: "ffffffff-...") {
+    jobId status result { errorType rootCause solution } error
+  }
+}
+```
+
+---
+
+## Notifications — `send_notifications_task`
+
+Déclenché automatiquement par `analyze_incident_task` quand un job passe en `complete` (si `workspace_id` est renseigné).
+
+Flux :
+```
+1. Récupère les AlertRule activées pour (workspace_id, event_type)
+2. Vérifie QuietHours — si période de silence active, skip sauf event_type="crashloop" (P1)
+3. Dispatch vers chaque NotificationChannel actif du workspace
+```
+
+| Type | Méthode | Config JSON |
+|------|---------|-------------|
+| `slack` / `discord` / `teams` | Webhook HTTP POST | `{"webhook_url": "..."}` |
+| `pagerduty` | Events API v2 | `{"routing_key": "..."}` |
+| `webhook` | HTTP POST custom | `{"url": "...", "secret": "..."}` |
+| `email` | SMTP (envs `SMTP_*`) | `{"address": "alerts@acme.io"}` |
+
+---
+
+## Endpoint REST CI/CD
+
+### `POST /api/v1/cicd/scan`
+
+Authentification par API Key (`X-Api-Key`). Exit codes 0/1/2 pour les pipelines GitHub Actions.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/cicd/scan \
+  -H "X-Api-Key: <clé>" \
+  -H "Content-Type: application/json" \
+  -d '{"yaml_content": "apiVersion: ...", "manifest_type": "Deployment"}'
+```
+
+| Exit code | `risk_level` | Signification |
+|-----------|-------------|---------------|
+| `0` | `safe` | Déploiement autorisé |
+| `1` | `warning` | Révision recommandée |
+| `2` | `block` | Déploiement bloqué |
+
+---
+
+## Standardisation des erreurs GraphQL — `app/api_codes.py`
+
+Toutes les erreurs GraphQL du gateway portent un code machine stable dans `extensions["code"]`.
+**Aucun `PermissionError` Python** n'est jamais propagé au client — tout est converti en `GraphQLError`.
+
+### Codes d'erreur (`ErrorCode`)
+
+| Code | HTTP équiv. | Quand |
+|------|-------------|-------|
+| `PODIQ_TOKEN_MISSING` | 401 | Header absent, vide, ou format non-Bearer |
+| `PODIQ_TOKEN_INVALID` | 401 | JWT expiré, signature invalide, type incorrect |
+| `PODIQ_UNAUTHORIZED` | 401 | Install token invalide ou expiré (agent) |
+| `PODIQ_FORBIDDEN` | 403 | Authentifié mais non autorisé (pas membre, pas admin) |
+| `PODIQ_NOT_FOUND` | 404 | Workspace, invitation, job, cluster, règle introuvable |
+| `PODIQ_CONFLICT` | 409 | Invitation déjà utilisée, expirée, ou slug déjà pris |
+| `PODIQ_VALIDATION_ERROR` | 400 | Données invalides (email, rôle, team_size, JSON malformé) |
+| `PODIQ_AUTH_GRPC_ERROR` | 502 | Appel gRPC vers auth-service échoué |
+| `PODIQ_AI_GRPC_ERROR` | 502 | Appel gRPC vers ai-service échoué |
+| `PODIQ_AI_TIMEOUT` | 504 | Timeout Ollama |
+| `PODIQ_INTERNAL_ERROR` | 500 | Erreur interne non anticipée |
+
+### Format de réponse en cas d'erreur
+
+```json
+{
+  "data": null,
+  "errors": [{
+    "message": "You are not a member of this workspace",
+    "extensions": {
+      "code": "PODIQ_FORBIDDEN"
+    }
+  }]
+}
+```
+
+### Règles d'implémentation
+
+- `require_auth()` lève `GraphQLError` (jamais `PermissionError`) — codes `TOKEN_MISSING` ou `TOKEN_INVALID`
+- Chaque `raise GraphQLError(...)` doit avoir `extensions=graphql_error_extensions(ErrorCode.XXX)`
+- Les erreurs gRPC passent par `raise_graphql_from_grpc()` dans `grpc_errors.py` qui mappe les statuts gRPC vers les `ErrorCode` appropriés
 
 ---
 
 ## Variables d'environnement
 
-| Variable               | Obligatoire | Défaut       | Description                               |
-|------------------------|-------------|--------------|-------------------------------------------|
-| `DATABASE_URL`         | Oui         | —            | `postgresql://user:pass@postgres-gateway/db`|
-| `DJANGO_SECRET_KEY`    | Oui         | —            | Clé secrète Django                        |
-| `ANALYZER_GRPC_HOST`   | Non         | `analyzer-service` | Hôte de l'analyzer-service          |
-| `ANALYZER_GRPC_PORT`   | Non         | `50052`      | Port de l'analyzer-service                |
-| `AI_GRPC_HOST`         | Non         | `ai-service` | Hôte de l'AI Service                      |
-| `AI_GRPC_PORT`         | Non         | `50053`      | Port de l'AI Service                      |
-| `AUTH_GRPC_HOST`       | Non         | `auth-service`| Hôte de l'auth-service                   |
-| `AUTH_GRPC_PORT`       | Non         | `50051`      | Port de l'auth-service                    |
-| `REDIS_URL`            | Oui (prod)  | —            | `redis://redis:6379/0` — broker Dramatiq pour les jobs async |
-| `CORS_ALLOWED_ORIGINS` | Non         | `*`          | Origins autorisées (CORS)                 |
-| `CORRELATION_WINDOW_MINUTES` | Non   | `15`         | Fenêtre (en minutes) pour marquer les pods « dans la fenêtre de corrélation » avec le pod incident |
-
-### Authentification des endpoints protégés
-
-Les mutations `analyzeIncident`, `scanManifest` et la query `analysisHistory` requièrent un JWT valide dans le header HTTP :
-
-```
-Authorization: Bearer <token>
-```
-
-Le token est obtenu via `login` ou `register` (mutations GraphQL publiques).
-
-En interne, le helper `app/auth.py::require_auth(info)` extrait le token, appelle **`auth-service` via gRPC** (`ValidateJWT`) et retourne le `user_id` si valide. En cas d'absence ou d'invalidité, une `PermissionError` est levée → GraphQL retourne une erreur `UNAUTHORIZED`.
-
-Les mutations `register` et `login` restent **publiques** (aucun token requis).
-
-### Dépannage rapide GraphQL
-
-- **`Unexpected token '<', "<html>..." is not valid JSON`** : le navigateur reçoit du HTML (souvent **502**). Causes fréquentes : worker Gunicorn tué (timeout trop court — reconstruire l’image gateway après changement du `Dockerfile`), ou Nginx qui ne joint plus le gateway (voir `ERROR_RESOLVE.md`, résolution DNS `127.0.0.11`).
-- **`grpc_message: "timed out"`** : dépassement côté ai-service / Ollama — augmenter `AI_TIMEOUT_SECONDS`, vérifier les logs `ai-service` et `ollama`, modèle recommandé **`mistral`** pour les longs prompts (voir `services/ai-service/README.md`).
+| Variable | Obligatoire | Défaut | Description |
+|----------|-------------|--------|-------------|
+| `DATABASE_URL` | Oui | — | `postgresql://user:pass@postgres-gateway/db` |  <!-- pragma: allowlist secret -->
+| `DJANGO_SECRET_KEY` | Oui | — | Clé secrète Django |
+| `GATEWAY_JWT_SECRET` | Oui | — | Signe les workspace-JWT (access tokens 1h) |
+| `GATEWAY_JWT_ACCESS_EXPIRY_MINUTES` | Non | `60` | Durée du workspace-JWT (access token) |
+| `JWT_EXPIRY_MINUTES` | Non | `1440` | Durée du user-JWT (auth-service) — 24h par défaut ; pas de refresh pour ce token |
+| `GATEWAY_REFRESH_SECRET` | Oui | — | Signe les refresh tokens (httpOnly cookie) |
+| `GATEWAY_REFRESH_EXPIRY_DAYS` | Non | `30` | Durée du refresh token |
+| `CORS_ALLOWED_ORIGINS` | Oui (prod) | — | Ex : `http://localhost:4200,http://localhost:8080` |
+| `REDIS_URL` | Oui | — | `redis://redis:6379/0` — broker Dramatiq |
+| `ANALYZER_GRPC_HOST/PORT` | Non | `analyzer-service:50052` | |
+| `AI_GRPC_HOST/PORT` | Non | `ai-service:50053` | |
+| `AUTH_GRPC_HOST/PORT` | Non | `auth-service:50051` | |
+| `SMTP_HOST/PORT/USER/PASSWORD` | Non | — | Emails d'invitation + canal `email` |
+| `CORRELATION_WINDOW_MINUTES` | Non | `15` | Fenêtre corrélation namespace |
+| `AI_TIMEOUT_SECONDS` | Non | `30` | Timeout vers Ollama (300 recommandé en dev CPU pour l'inférence Mistral) |
 
 ---
 
-## Communication avec les autres services
+## Dépendances notables
 
-```
-Client (Angular / CLI / CI)
-         │
-         ▼ HTTP GraphQL (port 8080)
-      Gateway
-    ┌────┼────────────────┐
-    ▼    ▼                ▼
-Auth  Analyzer          AI Service
-gRPC  gRPC              gRPC
-50051 50052             50053
-```
+| Paquet | Rôle |
+|--------|------|
+| `uvicorn[standard]` | Serveur ASGI + support WebSocket (`websockets` inclus) |
+| `starlette` | Requis par `strawberry.asgi.GraphQL` et `CORSMiddleware` |
+| `PyJWT` | Décodage/encodage JWT workspace (fast path local) |
+| `httpx` | Dispatch HTTP sortant vers canaux de notification |
+| `strawberry-graphql[django]` | GraphQL — version GitHub pinn ée (compatibilité Python 3.14) |
 
-Le Gateway est le **seul service visible de l'extérieur**. Tous les autres services sont internes au réseau Docker.
+> **Piège :** `uvicorn` sans `[standard]` ne détecte pas de librairie WebSocket et répond
+> `Unsupported upgrade request` à toute connexion WS. Log visible dans `docker logs podiq-gateway`.
 
 ---
 
-## Comment tester
+## Timeouts Nginx
 
-### Tests unitaires (pytest)
+Deux `location` blocks distincts dans `infra/nginx/default.conf` :
 
-**Python 3.14** en local est pris en charge : Strawberry est installé depuis une archive GitHub (commit pinné dans `requirements.txt`), nécessaire tant que PyPI ne publie pas ce correctif pour `dataclasses.Field` / **3.14**. L’image Docker reste en **Python 3.12** et utilise le même fichier de dépendances.
+| Location | `proxy_read_timeout` | `Connection` header | Pourquoi |
+|----------|---------------------|---------------------|---------|
+| `/graphql` | 300 s | `$connection_upgrade` (map) | WebSocket upgrade + SSE streaming |
+| `/` | 180 s | `""` (strip) | HTTP standard |
+
+La `map $http_upgrade $connection_upgrade` garantit :
+- WebSocket → `Connection: upgrade`
+- HTTP normal → `Connection: keep-alive`
+
+---
+
+## Erreurs connues et corrections appliquées
+
+### `You cannot call this from an async context`
+**Cause :** `AsyncGraphQLView` s'exécute dans une event loop asyncio ; Django ORM est synchrone.
+**Fix :** Toutes les fonctions resolver internes (`_xxx`) restent synchrones. Les `@strawberry.mutation` / `@strawberry.field` sont `async def` et wrappent avec `sync_to_async(_xxx)(...)`.
+
+### `{isTrusted: true}` dans le playground (subscriptions)
+**Cause 1 :** Nginx avec `proxy_set_header Connection ""` coupe le handshake WebSocket.
+**Cause 2 :** `AsyncGraphQLView` ne supporte pas WebSocket — `strawberry.asgi.GraphQL` est requis.
+**Cause 3 :** `uvicorn` (sans `[standard]`) n'a pas de librairie WebSocket.
+**Fix :** Voir section Architecture ASGI + Nginx ci-dessus.
+
+### `Cannot return null for non-nullable field Subscription.clusterConnected`
+**Cause :** `require_auth()` utilisait `hasattr(info.context, "request")` — retourne `False` sur un
+dict Python → token jamais lu → `GraphQLError` silencieuse → Strawberry collapse en `null`.
+**Fix :** `_header_from_dict_ctx()` vérifie `isinstance(ctx, dict)` et cherche `connection_params`
+(WebSocket) avant les headers HTTP.
+
+### `'dict' object has no attribute 'response'`
+**Cause :** `_set_refresh_cookie` faisait `info.context.response.set_cookie(...)` — accès attribut
+sur un dict.
+**Fix :** `_get_response(info)` retourne `ctx.get("response")` si dict, sinon `getattr(ctx, "response")`.
+
+### `Invitation not found or already used` (avec le bon token)
+**Cause :** L'utilisateur a passé le champ `id` de l'invitation à `acceptInvitation` au lieu du champ `token`. Les deux sont des UUID distincts.
+**Fix :** Aucun changement de code — comprendre la distinction `id` ≠ `token` dans `InvitationPayload`.
+
+### `Admin access required` malgré JWT role=admin
+**Cause :** `acceptInvitation` utilisait `update_or_create` avec `defaults={"role": invite.role}`,
+ce qui écrasait le rôle admin existant avec le rôle de l'invitation (member).
+**Fix :** `get_or_create` + upgrade uniquement si `_ROLE_PRIORITY[invite.role] > _ROLE_PRIORITY[member.role]`.
+
+---
+
+## Comment tester (flux complet)
+
+### 1. Démarrer
+
+```bash
+make up
+# ou
+docker compose up -d --build
+```
+
+### 2. Créer un compte et un workspace
+
+```graphql
+mutation { register(email: "steve@test.com", password: "test1234") { token } }  # pragma: allowlist secret
+# → copier le token (user-JWT)
+
+mutation { createWorkspace(name: "Mon Workspace") { id slug } }
+# → copier le workspace id
+
+mutation { selectWorkspace(workspaceId: "<id>") { token workspaceId role } }
+# → copier le workspace-JWT — utiliser pour toutes les opérations suivantes
+```
+
+### 3. Tester l'agent
+
+```graphql
+# Générer un install token
+mutation { generateInstallToken(workspaceId: "<id>") { token expiresAt } }
+
+# Simuler l'agent (heartbeat)
+mutation {
+  agentHeartbeat(installToken: "wsk_xxx", clusterName: "test", k8sVersion: "1.29") {
+    id name status
+  }
+}
+
+# Simuler un incident
+mutation {
+  agentReportIncident(installToken: "wsk_xxx", podName: "api-pod", namespace: "default") {
+    jobId status
+  }
+}
+```
+
+### 4. Tester les subscriptions (playground)
+
+Ajouter dans Headers : `{"Authorization": "Bearer <workspace-JWT>"}`
+
+```graphql
+subscription {
+  clusterConnected(workspaceId: "<id>") { id name status }
+}
+# → reste ouvert ; se déclenche dès qu'agentHeartbeat est appelé
+
+subscription {
+  jobStatus(jobId: "<jobId>") { jobId status result { errorType } error }
+}
+```
+
+### 5. Tester les invitations
+
+```graphql
+mutation {
+  inviteMember(workspaceId: "<id>", email: "colleague@test.com", role: "member") {
+    id token status expiresAt   # ← utiliser le champ "token" pour acceptInvitation
+  }
+}
+
+mutation {
+  acceptInvitation(token: "<token du champ token, pas id>") {
+    token workspaceId role
+  }
+}
+
+query {
+  listInvitations(workspaceId: "<id>") { id email role status }
+}
+```
+
+### 6. Tests unitaires
 
 ```bash
 cd services/gateway
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m pytest -v
+python3 -m pytest -v
+# → 95 tests, 0 failures
 ```
-
-Les contrôles **pre-commit** (Black, Ruff, mypy, etc.) s’exécutent depuis la **racine du dépôt** ; voir le README racine § « Pré-commit » et `pre-commit install`.
-
-### 1. Démarrer toute la stack
-
-```bash
-docker compose up -d --build
-docker compose logs -f gateway
-```
-
-### 2. Vérifier l'endpoint de santé
-
-```bash
-curl http://localhost:8080/healthz
-# → {"status": "ok"}
-```
-
-### 3. Ouvrir le playground GraphQL
-
-Naviguer vers `http://localhost:8080/graphql` dans le navigateur.
-
-### 4. Tester l'inscription
-
-```graphql
-mutation {
-  register(email: "test@podiq.io", password: "test1234") {
-    token
-    userId
-    email
-  }
-}
-```
-
-### 5. Déclencher une analyse (async)
-
-```graphql
-mutation {
-  analyzeIncident(podName: "crashloop-pod", namespace: "default") {
-    jobId
-    status
-    createdAt
-  }
-}
-```
-
-### 6. Poller le résultat
-
-```graphql
-query {
-  analysisJob(jobId: "<jobId retourné ci-dessus>") {
-    status
-    result {
-      errorType
-      rootCause
-      solution
-      confidence
-      isRecurring
-    }
-    error
-  }
-}
-```
-
-Relancer cette query toutes les 2–5 secondes jusqu'à `status="complete"` ou `"failed"`.

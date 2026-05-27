@@ -1,9 +1,11 @@
 import strawberry
 import structlog
+from asgiref.sync import sync_to_async
 from django.core.exceptions import ValidationError
 from graphql import GraphQLError
 from strawberry.types import Info
 
+from app.api_codes import ErrorCode, graphql_error_extensions
 from app.auth import require_auth
 from app.graphql.types import AnalysisJobType, AnalysisResultType
 from core.models import AnalysisJob
@@ -12,12 +14,20 @@ logger = structlog.get_logger()
 
 
 def _analysis_job(info: Info, job_id: str) -> AnalysisJobType:
-    user_id = require_auth(info)
+    ctx = require_auth(info)
 
+    # Prefer workspace-scoped access control when a workspace-JWT is present.
+    # Fall back to user_id for legacy user-JWT calls (no workspace context).
     try:
-        job = AnalysisJob.objects.get(id=job_id, user_id=user_id)
+        if ctx.workspace_id:
+            job = AnalysisJob.objects.get(id=job_id, workspace_id=ctx.workspace_id)
+        else:
+            job = AnalysisJob.objects.get(id=job_id, user_id=ctx.user_id)
     except (AnalysisJob.DoesNotExist, ValueError, ValidationError):
-        raise GraphQLError("Job not found")
+        raise GraphQLError(
+            "Job not found",
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
+        )
 
     logger.debug("query_analysis_job", job_id=job_id, status=job.status)
 
@@ -46,5 +56,5 @@ def _analysis_job(info: Info, job_id: str) -> AnalysisJobType:
 
 
 @strawberry.field
-def analysis_job(info: Info, job_id: str) -> AnalysisJobType:
-    return _analysis_job(info, job_id)
+async def analysis_job(info: Info, job_id: str) -> AnalysisJobType:
+    return await sync_to_async(_analysis_job)(info, job_id)

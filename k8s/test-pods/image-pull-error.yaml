@@ -1,0 +1,22 @@
+# Pod that fails to pull its image → ImagePullBackOff
+# Uses a non-existent image to trigger the error immediately.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: podiq-test-image-pull
+  namespace: default
+  labels:
+    podiq-test: "true"
+    scenario: image-pull-error
+spec:
+  restartPolicy: Never
+  containers:
+    - name: app
+      image: podiq-nonexistent-image:v999.0.0
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "50m"
+        limits:
+          memory: "64Mi"
+          cpu: "100m"
