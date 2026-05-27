@@ -9,7 +9,9 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from graphql import GraphQLError
 
+from app.api_codes import GRAPHQL_EXTENSION_CODE, ErrorCode
 from app.auth import TokenContext
 
 MOCK_USER_ID = "user-uuid-test"
@@ -133,8 +135,11 @@ class TestAnalyzeIncidentAuth:
     def test_raises_permission_error_without_token(self):
         from app.graphql.mutations.analyze import _analyze_incident
 
-        with pytest.raises(PermissionError):
+        with pytest.raises(GraphQLError) as exc_info:
             _analyze_incident(make_info(token=None), "pod", "ns", "", "", "")
+        assert (
+            exc_info.value.extensions[GRAPHQL_EXTENSION_CODE] == ErrorCode.TOKEN_MISSING
+        )
 
 
 # ── Dramatiq task ─────────────────────────────────────────────────────────────

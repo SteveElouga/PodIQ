@@ -175,7 +175,10 @@ def _select_workspace(info: Info, workspace_id: str) -> WorkspaceAuthPayload:
             user_id=ctx.user_id,
         )
     except WorkspaceMember.DoesNotExist:
-        raise PermissionError("You are not a member of this workspace")
+        raise GraphQLError(
+            "You are not a member of this workspace",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
     ws = member.workspace
     access_token = _issue_access_token(
@@ -206,19 +209,31 @@ def _refresh_token(info: Info) -> WorkspaceAuthPayload:
     cookies = getattr(req, "COOKIES", None) or getattr(req, "cookies", {})
     cookie = cookies.get("refresh_token")
     if not cookie:
-        raise PermissionError("No refresh token cookie")
+        raise GraphQLError(
+            "No refresh token cookie",
+            extensions=graphql_error_extensions(ErrorCode.TOKEN_MISSING),
+        )
 
     try:
         payload = pyjwt.decode(
             cookie, settings.GATEWAY_REFRESH_SECRET, algorithms=["HS256"]
         )
     except pyjwt.ExpiredSignatureError:
-        raise PermissionError("Refresh token expired")
+        raise GraphQLError(
+            "Refresh token expired",
+            extensions=graphql_error_extensions(ErrorCode.TOKEN_INVALID),
+        )
     except pyjwt.PyJWTError:
-        raise PermissionError("Invalid refresh token")
+        raise GraphQLError(
+            "Invalid refresh token",
+            extensions=graphql_error_extensions(ErrorCode.TOKEN_INVALID),
+        )
 
     if payload.get("type") != "refresh":
-        raise PermissionError("Invalid token type")
+        raise GraphQLError(
+            "Invalid token type",
+            extensions=graphql_error_extensions(ErrorCode.TOKEN_INVALID),
+        )
 
     user_id: str = payload["user_id"]
     workspace_id: str = payload["workspace_id"]
@@ -228,7 +243,10 @@ def _refresh_token(info: Info) -> WorkspaceAuthPayload:
             workspace_id=workspace_id, user_id=user_id
         )
     except WorkspaceMember.DoesNotExist:
-        raise PermissionError("Workspace membership revoked")
+        raise GraphQLError(
+            "Workspace membership revoked",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
     access_token = _issue_access_token(
         user_id=user_id,
@@ -256,12 +274,18 @@ def _update_workspace(
 ) -> WorkspaceType:
     ctx = require_auth(info)
     if ctx.workspace_id != workspace_id or ctx.role != WorkspaceMember.Role.ADMIN:
-        raise PermissionError("Admin access required for this workspace")
+        raise GraphQLError(
+            "Admin access required for this workspace",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
     try:
         workspace = Workspace.objects.get(id=workspace_id)
     except Workspace.DoesNotExist:
-        raise GraphQLError("Workspace not found")
+        raise GraphQLError(
+            "Workspace not found",
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
+        )
 
     if name is not None:
         name = name.strip()

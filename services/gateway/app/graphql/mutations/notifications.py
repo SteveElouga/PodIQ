@@ -16,6 +16,10 @@ from core.models import (
 
 logger = structlog.get_logger()
 
+_ERR_WORKSPACE_NOT_FOUND = "Workspace not found"
+_ERR_ALERT_RULE_NOT_FOUND = "Alert rule not found"
+_ERR_CHANNEL_NOT_FOUND = "Channel not found"
+
 
 @strawberry.type
 class AlertRuleType:
@@ -55,7 +59,10 @@ def _require_admin(user_id: str, workspace_id: str) -> None:
             role=WorkspaceMember.Role.ADMIN,
         )
     except WorkspaceMember.DoesNotExist:
-        raise PermissionError("Admin access required")
+        raise GraphQLError(
+            "Admin access required",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
 
 def _create_alert_rule(
@@ -75,7 +82,10 @@ def _create_alert_rule(
     try:
         workspace = Workspace.objects.get(id=workspace_id)
     except Workspace.DoesNotExist:
-        raise GraphQLError("Workspace not found")
+        raise GraphQLError(
+            _ERR_WORKSPACE_NOT_FOUND,
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
+        )
 
     rule_name = name or event_type
     rule = AlertRule.objects.create(
@@ -105,7 +115,10 @@ def _toggle_alert_rule(info: Info, rule_id: str, enabled: bool) -> AlertRuleType
     try:
         rule = AlertRule.objects.select_related("workspace").get(id=rule_id)
     except AlertRule.DoesNotExist:
-        raise GraphQLError("Alert rule not found")
+        raise GraphQLError(
+            _ERR_ALERT_RULE_NOT_FOUND,
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
+        )
 
     _require_admin(ctx.user_id, str(rule.workspace_id))
     rule.enabled = enabled
@@ -139,7 +152,7 @@ def _connect_channel(
 
     try:
         config_dict = json.loads(config)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         raise GraphQLError(
             "config must be valid JSON",
             extensions=graphql_error_extensions(ErrorCode.VALIDATION),
@@ -148,7 +161,10 @@ def _connect_channel(
     try:
         workspace = Workspace.objects.get(id=workspace_id)
     except Workspace.DoesNotExist:
-        raise GraphQLError("Workspace not found")
+        raise GraphQLError(
+            _ERR_WORKSPACE_NOT_FOUND,
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
+        )
 
     channel = NotificationChannel.objects.create(
         workspace=workspace,
@@ -176,7 +192,10 @@ def _disconnect_channel(info: Info, channel_id: str) -> bool:
     try:
         channel = NotificationChannel.objects.get(id=channel_id)
     except NotificationChannel.DoesNotExist:
-        raise GraphQLError("Channel not found")
+        raise GraphQLError(
+            _ERR_CHANNEL_NOT_FOUND,
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
+        )
 
     _require_admin(ctx.user_id, str(channel.workspace_id))
     channel.delete()
@@ -198,7 +217,10 @@ def _set_quiet_hours(
     try:
         workspace = Workspace.objects.get(id=workspace_id)
     except Workspace.DoesNotExist:
-        raise GraphQLError("Workspace not found")
+        raise GraphQLError(
+            _ERR_WORKSPACE_NOT_FOUND,
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
+        )
 
     qh, _ = QuietHours.objects.update_or_create(
         workspace=workspace,

@@ -49,10 +49,16 @@ def _invite_member(
             workspace_id=workspace_id, user_id=ctx.user_id
         )
     except WorkspaceMember.DoesNotExist:
-        raise PermissionError("Access denied to workspace")
+        raise GraphQLError(
+            "Access denied to workspace",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
     if member.role != WorkspaceMember.Role.ADMIN:
-        raise PermissionError("Only admins can invite members")
+        raise GraphQLError(
+            "Only admins can invite members",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
     try:
         role_choice = WorkspaceMember.Role(role)
@@ -65,7 +71,10 @@ def _invite_member(
     try:
         workspace = Workspace.objects.get(id=workspace_id)
     except Workspace.DoesNotExist:
-        raise GraphQLError("Workspace not found")
+        raise GraphQLError(
+            "Workspace not found",
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
+        )
 
     # Revoke any existing pending invite for the same email+workspace
     Invitation.objects.filter(
@@ -109,7 +118,10 @@ def _revoke_invitation(info: Info, invitation_id: str) -> bool:
     try:
         invite = Invitation.objects.select_related("workspace").get(id=invitation_id)
     except Invitation.DoesNotExist:
-        raise GraphQLError("Invitation not found")
+        raise GraphQLError(
+            "Invitation not found",
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
+        )
 
     try:
         WorkspaceMember.objects.get(
@@ -118,7 +130,10 @@ def _revoke_invitation(info: Info, invitation_id: str) -> bool:
             role=WorkspaceMember.Role.ADMIN,
         )
     except WorkspaceMember.DoesNotExist:
-        raise PermissionError("Only admins can revoke invitations")
+        raise GraphQLError(
+            "Only admins can revoke invitations",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
     invite.status = Invitation.Status.REVOKED
     invite.save(update_fields=["status"])
@@ -138,15 +153,24 @@ def _accept_invitation(info: Info, token: str) -> WorkspaceAuthPayload:
     try:
         invite = Invitation.objects.select_related("workspace").get(token=token)
     except Invitation.DoesNotExist:
-        raise GraphQLError("Invitation not found or already used")
+        raise GraphQLError(
+            "Invitation not found or already used",
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
+        )
 
     if invite.status != Invitation.Status.PENDING:
-        raise GraphQLError(f"Invitation is {invite.status}")
+        raise GraphQLError(
+            f"Invitation is {invite.status}",
+            extensions=graphql_error_extensions(ErrorCode.CONFLICT),
+        )
 
     if invite.expires_at < django_tz.now():
         invite.status = Invitation.Status.EXPIRED
         invite.save(update_fields=["status"])
-        raise GraphQLError("Invitation expired")
+        raise GraphQLError(
+            "Invitation expired",
+            extensions=graphql_error_extensions(ErrorCode.CONFLICT),
+        )
 
     # Add the user as a workspace member, or upgrade their role — never downgrade.
     member, created = WorkspaceMember.objects.get_or_create(
@@ -197,12 +221,18 @@ def _generate_invite_link(info: Info, workspace_id: str) -> InvitationPayload:
             role=WorkspaceMember.Role.ADMIN,
         )
     except WorkspaceMember.DoesNotExist:
-        raise PermissionError("Only admins can generate invite links")
+        raise GraphQLError(
+            "Only admins can generate invite links",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
     try:
         workspace = Workspace.objects.get(id=workspace_id)
     except Workspace.DoesNotExist:
-        raise GraphQLError("Workspace not found")
+        raise GraphQLError(
+            "Workspace not found",
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
+        )
 
     expires_at = django_tz.now() + timedelta(days=_INVITE_EXPIRY_DAYS)
     invite = Invitation.objects.create(

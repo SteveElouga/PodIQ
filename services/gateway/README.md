@@ -89,6 +89,13 @@ Gateway vérifie le user-JWT via gRPC, récupère le `WorkspaceMember` en base, 
 
 Retourne un `TokenContext(user_id, email, workspace_id, role)`.
 
+Lève **toujours `GraphQLError`** (jamais `PermissionError`) avec un code machine dans `extensions["code"]` :
+| Cas | Code `extensions["code"]` |
+|-----|--------------------------|
+| Header absent ou format non-Bearer | `PODIQ_TOKEN_MISSING` |
+| Token vide | `PODIQ_TOKEN_MISSING` |
+| JWT invalide / expiré (gRPC) | `PODIQ_TOKEN_INVALID` |
+
 Gère **trois layouts de contexte Strawberry** :
 | Contexte | Cas | Extraction |
 |----------|-----|-----------|
@@ -100,6 +107,83 @@ Gère **trois layouts de contexte Strawberry** :
 > `hasattr(ctx, "request")` retourne `False` sur un dict Python → le token n'était jamais lu.
 > Fix : vérifier `isinstance(ctx, dict)` en premier, puis chercher `connection_params` (WebSocket)
 > avant les headers HTTP.
+
+---
+
+## Gestion des erreurs de token — Arbres de décision
+
+### Phase 1 — User-JWT (post-login, avant selectWorkspace)
+
+Le user-JWT est un credential de transition : il ne sert qu'à `createWorkspace` et `selectWorkspace`.
+**Il n'existe pas de mécanisme de refresh pour le user-JWT** — expiration = reconnexion obligatoire.
+
+```
+Appel avec user-JWT
+        │
+        ├─ PODIQ_TOKEN_MISSING  →  rediriger vers /login
+        ├─ PODIQ_TOKEN_INVALID  →  rediriger vers /login
+        │   (expiré après 24h, signature invalide, token vide)
+        └─ Succès               →  continuer l'onboarding
+```
+
+**Pourquoi pas de refresh pour le user-JWT ?**
+Le user-JWT est transitoire par conception : il expire en 24h (env `JWT_EXPIRY_MINUTES=1440` dans
+auth-service). Sa seule raison d'être est d'obtenir un workspace-JWT via `selectWorkspace`.
+Gérer un refresh cycle pour lui ajouterait de la complexité sans bénéfice réel — si l'utilisateur
+met 24h entre son `login` et son `selectWorkspace`, il re-login simplement.
+
+### Phase 2 — Workspace-JWT (post-selectWorkspace, opérations métier)
+
+```
+Appel avec workspace-JWT
+        │
+        ├─ PODIQ_TOKEN_MISSING  →  rediriger vers /login (re-login complet)
+        │
+        ├─ PODIQ_TOKEN_INVALID  →  appeler mutation { refreshToken }
+        │   (workspace-JWT expiré après 1h)       │
+        │                               ┌──────────┴──────────┐
+        │                         Succès (cookie OK)     Échec (cookie expiré/absent)
+        │                               │                      │
+        │                      retry l'appel original   re-login → selectWorkspace
+        │
+        ├─ PODIQ_FORBIDDEN      →  afficher message "droits insuffisants"
+        │   (authentifié mais pas admin, etc.)     Ne jamais déconnecter — l'utilisateur
+        │                                          est valide, juste pas autorisé pour cette action
+        │
+        └─ PODIQ_AUTH_GRPC_ERROR  →  afficher "service temporairement indisponible", retry
+```
+
+### Re-login avec onboarding incomplet
+
+Quand l'utilisateur se reconnecte (user-JWT obtenu) et n'a pas encore fini l'onboarding :
+
+```
+login → user-JWT obtenu
+        │
+        ▼
+listWorkspaces (avec user-JWT)
+        │
+        ├─ 0 workspace          →  rediriger vers createWorkspace (premier onboarding)
+        │
+        ├─ 1 workspace
+        │       │
+        │       └─ onboarded_at is null  →  selectWorkspace → workspace-JWT
+        │                                   → rediriger vers wizard installation agent
+        │           (onboarded_at not null) →  selectWorkspace → accès normal
+        │
+        └─ N workspaces
+                │
+                ├─ Présenter la liste de sélection au frontend
+                │   (chaque workspace indique si onboarded_at is null)
+                │
+                └─ Après sélection → selectWorkspace → workspace-JWT
+                    → si onboarded_at is null : wizard agent pour ce workspace
+                    → sinon : accès normal
+```
+
+> **Signal canonique** : `workspace.onboarded_at` est posé par le backend automatiquement
+> au **premier `agentHeartbeat`** reçu pour ce workspace. Le frontend ne doit jamais
+> le poser lui-même — il se contente de le lire.
 
 ---
 
@@ -257,6 +341,13 @@ mutation {
 > pas « token invalidé ». L'agent réutilise le même token pour tous ses appels ultérieurs.
 > `_resolve_install_token()` vérifie uniquement l'expiration, pas le flag `used`.
 
+> **`onboarded_at` — signal de fin d'onboarding :** au **premier** heartbeat d'un cluster
+> (`Cluster` créé = `created=True`), le gateway pose automatiquement
+> `workspace.onboarded_at = now()` **si et seulement si** `workspace.onboarded_at is None`.
+> Ce champ est immuable une fois posé (ajout d'un second cluster ne l'écrase pas).
+> Le frontend consulte `onboarded_at` pour savoir si l'utilisateur doit encore passer
+> par le wizard d'installation agent.
+
 ### `agentReportIncident`
 
 L'agent envoie un incident détecté. Crée un `AnalysisJob` et l'enfile dans Dramatiq.
@@ -397,6 +488,49 @@ curl -X POST http://localhost:8080/api/v1/cicd/scan \
 
 ---
 
+## Standardisation des erreurs GraphQL — `app/api_codes.py`
+
+Toutes les erreurs GraphQL du gateway portent un code machine stable dans `extensions["code"]`.
+**Aucun `PermissionError` Python** n'est jamais propagé au client — tout est converti en `GraphQLError`.
+
+### Codes d'erreur (`ErrorCode`)
+
+| Code | HTTP équiv. | Quand |
+|------|-------------|-------|
+| `PODIQ_TOKEN_MISSING` | 401 | Header absent, vide, ou format non-Bearer |
+| `PODIQ_TOKEN_INVALID` | 401 | JWT expiré, signature invalide, type incorrect |
+| `PODIQ_UNAUTHORIZED` | 401 | Install token invalide ou expiré (agent) |
+| `PODIQ_FORBIDDEN` | 403 | Authentifié mais non autorisé (pas membre, pas admin) |
+| `PODIQ_NOT_FOUND` | 404 | Workspace, invitation, job, cluster, règle introuvable |
+| `PODIQ_CONFLICT` | 409 | Invitation déjà utilisée, expirée, ou slug déjà pris |
+| `PODIQ_VALIDATION_ERROR` | 400 | Données invalides (email, rôle, team_size, JSON malformé) |
+| `PODIQ_AUTH_GRPC_ERROR` | 502 | Appel gRPC vers auth-service échoué |
+| `PODIQ_AI_GRPC_ERROR` | 502 | Appel gRPC vers ai-service échoué |
+| `PODIQ_AI_TIMEOUT` | 504 | Timeout Ollama |
+| `PODIQ_INTERNAL_ERROR` | 500 | Erreur interne non anticipée |
+
+### Format de réponse en cas d'erreur
+
+```json
+{
+  "data": null,
+  "errors": [{
+    "message": "You are not a member of this workspace",
+    "extensions": {
+      "code": "PODIQ_FORBIDDEN"
+    }
+  }]
+}
+```
+
+### Règles d'implémentation
+
+- `require_auth()` lève `GraphQLError` (jamais `PermissionError`) — codes `TOKEN_MISSING` ou `TOKEN_INVALID`
+- Chaque `raise GraphQLError(...)` doit avoir `extensions=graphql_error_extensions(ErrorCode.XXX)`
+- Les erreurs gRPC passent par `raise_graphql_from_grpc()` dans `grpc_errors.py` qui mappe les statuts gRPC vers les `ErrorCode` appropriés
+
+---
+
 ## Variables d'environnement
 
 | Variable | Obligatoire | Défaut | Description |
@@ -404,7 +538,8 @@ curl -X POST http://localhost:8080/api/v1/cicd/scan \
 | `DATABASE_URL` | Oui | — | `postgresql://user:pass@postgres-gateway/db` |  <!-- pragma: allowlist secret -->
 | `DJANGO_SECRET_KEY` | Oui | — | Clé secrète Django |
 | `GATEWAY_JWT_SECRET` | Oui | — | Signe les workspace-JWT (access tokens 1h) |
-| `GATEWAY_JWT_ACCESS_EXPIRY_MINUTES` | Non | `60` | Durée du workspace-JWT |
+| `GATEWAY_JWT_ACCESS_EXPIRY_MINUTES` | Non | `60` | Durée du workspace-JWT (access token) |
+| `JWT_EXPIRY_MINUTES` | Non | `1440` | Durée du user-JWT (auth-service) — 24h par défaut ; pas de refresh pour ce token |
 | `GATEWAY_REFRESH_SECRET` | Oui | — | Signe les refresh tokens (httpOnly cookie) |
 | `GATEWAY_REFRESH_EXPIRY_DAYS` | Non | `30` | Durée du refresh token |
 | `CORS_ALLOWED_ORIGINS` | Oui (prod) | — | Ex : `http://localhost:4200,http://localhost:8080` |
@@ -462,7 +597,7 @@ La `map $http_upgrade $connection_upgrade` garantit :
 
 ### `Cannot return null for non-nullable field Subscription.clusterConnected`
 **Cause :** `require_auth()` utilisait `hasattr(info.context, "request")` — retourne `False` sur un
-dict Python → token jamais lu → `PermissionError` silencieuse → Strawberry collapse en `null`.
+dict Python → token jamais lu → `GraphQLError` silencieuse → Strawberry collapse en `null`.
 **Fix :** `_header_from_dict_ctx()` vérifie `isinstance(ctx, dict)` et cherche `connection_params`
 (WebSocket) avant les headers HTTP.
 

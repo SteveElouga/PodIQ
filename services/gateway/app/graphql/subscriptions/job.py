@@ -45,15 +45,28 @@ async def job_status(info: Info, job_id: str) -> AsyncGenerator[AnalysisJobType,
     """Stream AnalysisJob status updates until the job reaches a terminal state."""
     ctx = require_auth(info)
 
-    get_job = sync_to_async(
-        lambda: AnalysisJob.objects.filter(id=job_id, user_id=ctx.user_id).first()
-    )
+    # Prefer workspace-scoped access control; fall back to user_id for legacy JWTs.
+    if ctx.workspace_id:
+        get_job = sync_to_async(
+            lambda: AnalysisJob.objects.filter(
+                id=job_id, workspace_id=ctx.workspace_id
+            ).first()
+        )
+    else:
+        get_job = sync_to_async(
+            lambda: AnalysisJob.objects.filter(id=job_id, user_id=ctx.user_id).first()
+        )
 
     job = await get_job()
     if job is None:
         raise ValueError("Job not found or access denied")
 
-    logger.info("subscription_job_watching", job_id=job_id, user_id=ctx.user_id)
+    logger.info(
+        "subscription_job_watching",
+        job_id=job_id,
+        user_id=ctx.user_id,
+        workspace_id=ctx.workspace_id,
+    )
 
     while True:
         job = await sync_to_async(lambda: AnalysisJob.objects.get(id=job_id))()

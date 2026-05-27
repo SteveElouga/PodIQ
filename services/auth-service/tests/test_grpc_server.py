@@ -3,6 +3,8 @@ auth-service gRPC server unit tests.
 In-memory SQLite via config.settings_pytest — no .env or postgres-auth required.
 """
 
+import hashlib
+import os
 import uuid
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
@@ -17,10 +19,18 @@ from app.grpc_server import (
     _generate_token,
     _hash_api_key,
     _hash_password,
+    _needs_rehash,
     _verify_password,
 )
 from core.models import ApiKey, User
 from stubs.auth import auth_pb2
+
+
+def _make_legacy_sha256_hash(password: str) -> str:
+    """Reproduce the legacy SHA-256+pepper hash used before Argon2id migration."""
+    pepper = os.environ.get("DJANGO_SECRET_KEY", "")
+    return hashlib.sha256(f"{pepper}{password}".encode()).hexdigest()
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -62,11 +72,36 @@ def api_key(db, user) -> tuple[ApiKey, str]:
 
 
 class TestHelpers:
-    def test_hash_password_deterministic(self):
-        assert _hash_password("secret") == _hash_password("secret")
+    # ── _hash_password (Argon2id) ────────────────────────────────────────────
+
+    def test_hash_password_is_argon2id_format(self):
+        """Output must start with the Argon2id marker."""
+        assert _hash_password("secret").startswith("$argon2id$")
+
+    def test_hash_password_uses_unique_salts(self):
+        """Each call must produce a different hash even for identical passwords."""
+        h1 = _hash_password("secret")
+        h2 = _hash_password("secret")
+        assert h1 != h2, "Argon2id must embed a unique random salt per call"
 
     def test_hash_password_different_inputs(self):
+        """Different passwords must never produce the same hash."""
         assert _hash_password("secret") != _hash_password("other")
+
+    # ── _needs_rehash ────────────────────────────────────────────────────────
+
+    def test_needs_rehash_legacy_sha256_returns_true(self):
+        """Legacy 64-char hex SHA-256 hash must be flagged for upgrade."""
+        legacy = _make_legacy_sha256_hash("somepassword")
+        assert len(legacy) == 64  # sanity-check it looks like a hex digest
+        assert _needs_rehash(legacy) is True
+
+    def test_needs_rehash_argon2id_returns_false(self):
+        """Fresh Argon2id hash must NOT be flagged for re-hashing."""
+        fresh = _hash_password("somepassword")
+        assert _needs_rehash(fresh) is False
+
+    # ── _verify_password (Argon2id) ───────────────────────────────────────────
 
     def test_verify_password_correct(self):
         h = _hash_password("mypassword")
@@ -75,6 +110,19 @@ class TestHelpers:
     def test_verify_password_wrong(self):
         h = _hash_password("mypassword")
         assert _verify_password("wrong", h) is False
+
+    # ── _verify_password (legacy SHA-256) — migration compatibility ───────────
+
+    def test_verify_legacy_sha256_correct_password(self):
+        """Legacy SHA-256+pepper hashes must still verify during migration window."""
+        legacy = _make_legacy_sha256_hash("legacypass")
+        assert _verify_password("legacypass", legacy) is True
+
+    def test_verify_legacy_sha256_wrong_password_returns_false(self):
+        legacy = _make_legacy_sha256_hash("legacypass")
+        assert _verify_password("wrongpass", legacy) is False
+
+    # ── _generate_token ───────────────────────────────────────────────────────
 
     def test_generate_token_contains_claims(self):
         token = _generate_token("uid-123", "user@test.com")
@@ -87,6 +135,8 @@ class TestHelpers:
         payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
         assert "exp" in payload
         assert payload["exp"] > datetime.now(UTC).timestamp()
+
+    # ── _hash_api_key ─────────────────────────────────────────────────────────
 
     def test_hash_api_key_deterministic(self):
         assert _hash_api_key("mykey") == _hash_api_key("mykey")
@@ -232,6 +282,81 @@ class TestLogin:
         call_args = c.set_details.call_args[0][0]
         assert "email" in call_args.lower() or "password" in call_args.lower()
         assert "existing@test.com" not in call_args
+
+
+# ── Login — Argon2id transparent migration ────────────────────────────────────
+
+
+@pytest.mark.django_db
+class TestLoginMigration:
+    def test_login_accepts_legacy_sha256_hash(self, servicer):
+        """A user with a legacy SHA-256 hash can still log in during the migration window."""
+        User.objects.create(
+            email="legacy@test.com",
+            password_hash=_make_legacy_sha256_hash(
+                "oldpass"
+            ),  # pragma: allowlist secret
+        )
+        c = ctx()
+        resp = servicer.Login(
+            auth_pb2.LoginRequest(
+                email="legacy@test.com",
+                password="oldpass",  # pragma: allowlist secret  # NOSONAR
+            ),
+            c,
+        )
+        assert resp.email == "legacy@test.com"
+        assert resp.token != ""
+        c.set_code.assert_not_called()
+
+    def test_login_upgrades_legacy_sha256_to_argon2id(self, servicer):
+        """After a successful login with a legacy hash the stored hash must be Argon2id."""
+        user = User.objects.create(
+            email="migrate@test.com",
+            password_hash=_make_legacy_sha256_hash(
+                "oldpass"
+            ),  # pragma: allowlist secret
+        )
+        # Confirm the hash is legacy before login
+        assert _needs_rehash(user.password_hash) is True
+
+        c = ctx()
+        servicer.Login(
+            auth_pb2.LoginRequest(
+                email="migrate@test.com",
+                password="oldpass",  # pragma: allowlist secret  # NOSONAR
+            ),
+            c,
+        )
+
+        user.refresh_from_db()
+        assert user.password_hash.startswith(
+            "$argon2id$"
+        ), "Hash must be upgraded to Argon2id after first successful login"
+        assert _needs_rehash(user.password_hash) is False
+
+    def test_login_does_not_rehash_already_argon2id(self, servicer):
+        """A user with an Argon2id hash must NOT be rehashed again on login."""
+        original_hash = _hash_password("newpass")  # pragma: allowlist secret
+        user = User.objects.create(
+            email="fresh@test.com",
+            password_hash=original_hash,
+        )
+        c = ctx()
+        servicer.Login(
+            auth_pb2.LoginRequest(
+                email="fresh@test.com",
+                password="newpass",  # pragma: allowlist secret  # NOSONAR
+            ),
+            c,
+        )
+        user.refresh_from_db()
+        # The hash identity may differ (Argon2 verify may re-encode), but it
+        # must still start with the Argon2id marker and must verify correctly.
+        assert user.password_hash.startswith("$argon2id$")
+        assert (
+            _verify_password("newpass", user.password_hash) is True
+        )  # pragma: allowlist secret
 
 
 # ── ValidateJWT ───────────────────────────────────────────────────────────────

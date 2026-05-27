@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 from graphql import GraphQLError
 
+from app.api_codes import GRAPHQL_EXTENSION_CODE, ErrorCode
 from app.auth import TokenContext
 
 MOCK_USER_ID = "cafecafe-cafe-cafe-cafe-cafecafecafe"
@@ -156,5 +157,8 @@ class TestAnalysisJobAuth:
         info = SimpleNamespace(
             context=SimpleNamespace(request=SimpleNamespace(headers={}))
         )
-        with pytest.raises(PermissionError):
+        with pytest.raises(GraphQLError) as exc_info:
             _analysis_job(info, MOCK_JOB_ID)
+        assert (
+            exc_info.value.extensions[GRAPHQL_EXTENSION_CODE] == ErrorCode.TOKEN_MISSING
+        )

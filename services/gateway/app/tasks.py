@@ -130,6 +130,7 @@ def analyze_incident_task(
                 pod_name=pod_name,
                 namespace=namespace,
                 limit=5,
+                workspace_id=workspace_id,
             ),
         )
         history = [
@@ -161,6 +162,7 @@ def analyze_incident_task(
             events=events_full,
             history=history,
             namespace_context=namespace_context,
+            workspace_id=workspace_id,
         )
 
         result = invoke_grpc(

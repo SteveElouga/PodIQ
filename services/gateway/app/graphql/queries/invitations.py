@@ -1,8 +1,10 @@
 import strawberry
 import structlog
 from asgiref.sync import sync_to_async
+from graphql import GraphQLError
 from strawberry.types import Info
 
+from app.api_codes import ErrorCode, graphql_error_extensions
 from app.auth import require_auth
 from app.graphql.mutations.invitation import InvitationPayload
 from core.models import Invitation, WorkspaceMember
@@ -22,7 +24,10 @@ def _list_invitations(
             role=WorkspaceMember.Role.ADMIN,
         )
     except WorkspaceMember.DoesNotExist:
-        raise PermissionError("Admin access required")
+        raise GraphQLError(
+            "Admin access required",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
     qs = Invitation.objects.filter(workspace_id=workspace_id)
     if status:

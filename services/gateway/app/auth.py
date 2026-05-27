@@ -4,8 +4,10 @@ import grpc
 import jwt as pyjwt
 import structlog
 from django.conf import settings
+from graphql import GraphQLError
 from strawberry.types import Info
 
+from app.api_codes import ErrorCode, graphql_error_extensions
 from app.grpc_clients import auth_client
 from app.grpc_errors import GrpcService, raise_graphql_from_grpc
 
@@ -64,13 +66,17 @@ def require_auth(info: Info) -> TokenContext:
     header = _extract_auth_header(info)
 
     if not header.startswith("Bearer "):
-        raise PermissionError(
-            "Missing or invalid token format (expected: Bearer <token>)"
+        raise GraphQLError(
+            "Missing or invalid token format (expected: Bearer <token>)",
+            extensions=graphql_error_extensions(ErrorCode.TOKEN_MISSING),
         )
 
     token = header.removeprefix("Bearer ").strip()
     if not token:
-        raise PermissionError("Empty token")
+        raise GraphQLError(
+            "Empty token",
+            extensions=graphql_error_extensions(ErrorCode.TOKEN_MISSING),
+        )
 
     # Fast path: workspace-JWT signed by gateway (GATEWAY_JWT_SECRET)
     gateway_secret = getattr(settings, "GATEWAY_JWT_SECRET", "")
@@ -96,7 +102,10 @@ def require_auth(info: Info) -> TokenContext:
 
     if not response.valid:
         logger.warning("jwt_invalid", error=response.error)
-        raise PermissionError(response.error or "Invalid or expired token")
+        raise GraphQLError(
+            response.error or "Invalid or expired token",
+            extensions=graphql_error_extensions(ErrorCode.TOKEN_INVALID),
+        )
 
     logger.debug("jwt_valid", user_id=response.user_id)
     return TokenContext(user_id=response.user_id, email=getattr(response, "email", ""))

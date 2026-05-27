@@ -54,6 +54,7 @@ def _scan_manifest(
         ),
     )
 
+    workspace_id = ctx.workspace_id or ""
     history = _fetch_history(parsed.name, parsed.namespace)
     logger.info(
         "manifest_history_fetched",
@@ -72,6 +73,7 @@ def _scan_manifest(
             manifest_namespace=parsed.namespace,
             manifest_type=parsed.manifest_type,
             related_history=history,
+            workspace_id=workspace_id,
         ),
     )
 

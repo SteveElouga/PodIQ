@@ -4,8 +4,10 @@ from collections.abc import AsyncGenerator
 import strawberry
 import structlog
 from asgiref.sync import sync_to_async
+from graphql import GraphQLError
 from strawberry.types import Info
 
+from app.api_codes import ErrorCode, graphql_error_extensions
 from app.auth import require_auth
 from app.graphql.types import ClusterType
 from core.models import Cluster, WorkspaceMember
@@ -22,7 +24,10 @@ async def cluster_connected(
     """Stream until the first connected Cluster for the given workspace appears."""
     ctx = require_auth(info)
     if ctx.workspace_id != workspace_id:
-        raise PermissionError("Access denied to workspace")
+        raise GraphQLError(
+            "Access denied to workspace",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
     member = await sync_to_async(
         lambda: WorkspaceMember.objects.filter(
@@ -30,7 +35,10 @@ async def cluster_connected(
         ).first()
     )()
     if member is None:
-        raise PermissionError("Not a member of this workspace")
+        raise GraphQLError(
+            "Not a member of this workspace",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
     logger.info(
         "subscription_cluster_watching",

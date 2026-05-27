@@ -1,15 +1,20 @@
-# PodIQ — Spécification Fonctionnelle
+# PodIQ — Contrat API Backend / Frontend
 
-**Version** : 2.0
-**Date** : 2026-05-20
+**Version** : 3.0
+**Date** : 2026-05-27
 **Public cible** : Équipe frontend Angular
-**Source** : `PodIQ Hi-fi.html` — 9 sections, ~30 écrans
+**Auteur** : Backend PodIQ
+**Source maquette** : `PodIQ Hi-fi.html` — 9 sections, ~30 écrans
 
-> **Note de mise à jour v2.0** — La v1.0 décrivait une API REST imaginaire. Cette version
-> reflète l'implémentation backend réelle. **Toutes les opérations passent par GraphQL**
-> (`POST /graphql`) sauf l'endpoint CI/CD (`POST /api/v1/cicd/scan`). Les fonctionnalités
-> non encore implémentées sont marquées **[NON IMPLÉMENTÉ]** — le frontend doit les stubber
-> jusqu'à leur disponibilité backend.
+> **Ce document est le contrat de référence entre le backend et le frontend.**
+> Il décrit **ce que le backend expose réellement** — les signatures GraphQL exactes,
+> les codes d'erreur normalisés, les règles de gestion des tokens, et les comportements
+> garantis. Les fonctionnalités non encore implémentées côté backend sont marquées
+> **[NON IMPLÉMENTÉ]** — le frontend doit les stubber jusqu'à leur disponibilité.
+>
+> **v3.0** — Mise à jour post-phase-17 : codes d'erreur `PODIQ_*` exacts, flux token
+> corrigés (user-JWT sans refresh, workspace-JWT avec cookie httpOnly), `onboarded_at`
+> auto-posé par `agentHeartbeat` (plus de setter manuel), isolation tenant complète.
 
 ---
 
@@ -130,6 +135,61 @@ Le token doit être passé dans le payload `connection_init` :
 
 **SSO (Google, GitHub, SAML) — [NON IMPLÉMENTÉ]**
 
+### Gestion des erreurs de token — Comportement attendu du frontend
+
+#### User-JWT (Phase 1 — avant selectWorkspace)
+
+Le user-JWT est un credential **transitoire** (24h, signé par auth-service).
+**Il n'existe pas de mécanisme de refresh pour le user-JWT.**
+
+| Erreur reçue | Code `extensions["code"]` | Action frontend |
+|---|---|---|
+| Header absent | `PODIQ_TOKEN_MISSING` | Rediriger vers `/login` |
+| JWT invalide / expiré | `PODIQ_TOKEN_INVALID` | Rediriger vers `/login` |
+
+#### Workspace-JWT (Phase 2 — après selectWorkspace)
+
+Le workspace-JWT expire en 1h (`GATEWAY_JWT_ACCESS_EXPIRY_MINUTES`). Le cookie `refresh_token` (30j) permet de le renouveler silencieusement.
+
+```
+Appel avec workspace-JWT
+        │
+        ├─ PODIQ_TOKEN_MISSING   →  re-login complet (/login → selectWorkspace)
+        │
+        ├─ PODIQ_TOKEN_INVALID   →  appeler mutation { refreshToken }
+        │   (workspace-JWT expiré)        │
+        │                      ┌──────────┴──────────┐
+        │                Succès (cookie valide) Échec (cookie expiré/absent)
+        │                      │                     │
+        │               retry appel original    /login → selectWorkspace
+        │
+        ├─ PODIQ_FORBIDDEN       →  toast "Droits insuffisants" — NE PAS déconnecter
+        │   (pas admin, pas membre)
+        │
+        └─ PODIQ_AUTH_GRPC_ERROR →  toast "Service indisponible" + retry après délai
+```
+
+#### Re-login avec onboarding incomplet
+
+```
+login → user-JWT
+        │
+        ▼  listWorkspaces (avec user-JWT)
+        │
+        ├─ 0 workspace    →  /onboarding/workspace  (premier onboarding)
+        │
+        ├─ 1 workspace
+        │     ├─ onboardedAt == null  →  selectWorkspace → /onboarding/cluster
+        │     └─ onboardedAt renseigné →  selectWorkspace → /dashboard
+        │
+        └─ N workspaces   →  picker de sélection
+              Après sélection → selectWorkspace
+              → onboardedAt == null ? /onboarding/cluster : /dashboard
+```
+
+> **`onboardedAt`** est posé automatiquement par le backend au premier `agentHeartbeat`
+> reçu pour le workspace. Le frontend le lit, il ne le pose jamais lui-même.
+
 ### Rôles & permissions
 
 | Rôle | Lecture | Écriture | Admin (invitations, canaux, API keys) |
@@ -142,20 +202,36 @@ Les mutations `createAlertRule`, `toggleAlertRule`, `connectChannel`, `disconnec
 
 ### Format des erreurs GraphQL
 
-Les erreurs sont retournées dans le champ `errors[]` standard GraphQL. Le champ `extensions` porte le code normalisé :
+Les erreurs sont retournées dans le champ `errors[]` standard GraphQL. Le champ `extensions["code"]` porte le code normalisé `PODIQ_*` — **toujours une string stable**, jamais un entier.
 
 ```json
 {
   "errors": [
     {
       "message": "Workspace name must be 2–32 characters",
-      "extensions": { "code": "VALIDATION" }
+      "extensions": { "code": "PODIQ_VALIDATION_ERROR" }
     }
   ]
 }
 ```
 
-Codes disponibles : `VALIDATION`, `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `INTERNAL`.
+**Codes d'erreur exacts** (définis dans `app/api_codes.py`) :
+
+| Code | HTTP équiv. | Quand |
+|------|-------------|-------|
+| `PODIQ_TOKEN_MISSING` | 401 | Header `Authorization` absent, vide, ou format non-`Bearer` |
+| `PODIQ_TOKEN_INVALID` | 401 | JWT expiré, signature invalide, mauvais type (ex. user-JWT utilisé là où workspace-JWT requis) |
+| `PODIQ_UNAUTHORIZED` | 401 | Install token invalide ou expiré (agent uniquement) |
+| `PODIQ_FORBIDDEN` | 403 | Authentifié mais non autorisé (pas membre du workspace, pas admin) |
+| `PODIQ_NOT_FOUND` | 404 | Workspace, invitation, job, cluster, règle introuvable |
+| `PODIQ_CONFLICT` | 409 | Email déjà utilisé, invitation déjà utilisée/expirée, slug déjà pris |
+| `PODIQ_VALIDATION_ERROR` | 400 | Données invalides (email, rôle, team_size, JSON malformé) |
+| `PODIQ_AUTH_GRPC_ERROR` | 502 | Appel gRPC vers auth-service échoué |
+| `PODIQ_AI_GRPC_ERROR` | 502 | Appel gRPC vers ai-service échoué |
+| `PODIQ_AI_TIMEOUT` | 504 | Timeout Ollama (inférence trop longue) |
+| `PODIQ_INTERNAL_ERROR` | 500 | Erreur interne non anticipée |
+
+> **Important :** Ne jamais mapper ces codes sur des messages hardcodés en anglais dans le frontend. Utiliser le champ `message` de la réponse GraphQL pour l'affichage utilisateur.
 
 ### Pagination
 
@@ -300,8 +376,8 @@ query {
 ```
 
 **Erreurs possibles :**
-- `UNAUTHENTICATED` — credentials invalides
-- `VALIDATION` — email mal formé
+- `PODIQ_TOKEN_INVALID` — credentials invalides (message : "Invalid credentials")
+- `PODIQ_VALIDATION_ERROR` — email mal formé
 
 ## 4. États
 - **Initial** : form vide.
@@ -312,6 +388,8 @@ query {
 - **RM010** — Pas de rate-limiting implémenté côté backend pour l'instant.
 - **RM011** — SSO non disponible. Email/password uniquement.
 - **RM012** — Le cookie `refresh_token` (30 jours) est posé automatiquement par `selectWorkspace`.
+- **RM013** — Le user-JWT retourné par `login` expire en **24h** et ne dispose pas de mécanisme de refresh. Si expiré, l'utilisateur doit re-login.
+- **RM014** — Après `login`, appeler `listWorkspaces` pour déterminer le statut d'onboarding (voir §Gestion des erreurs de token).
 
 ## 6. Critères d'acceptation
 ```gherkin
@@ -363,8 +441,8 @@ mutation Register($email: String!, $password: String!) {
 Après registration, enchaîner directement avec `createWorkspace` (onboarding step 1).
 
 **Erreurs possibles :**
-- `CONFLICT` — email déjà utilisé
-- `VALIDATION` — email mal formé
+- `PODIQ_CONFLICT` — email déjà utilisé
+- `PODIQ_VALIDATION_ERROR` — email mal formé
 
 ## 4. Validation password (live)
 Indicateur de force côté frontend uniquement (backend ne valide pas la complexité) :
@@ -374,10 +452,10 @@ Indicateur de force côté frontend uniquement (backend ne valide pas la complex
 - 4 barres : + 1 caractère spécial
 
 ## 5. États
-- **Initial**, **Loading**, **Erreur email pris** (CONFLICT), **Erreur email invalide** (VALIDATION).
+- **Initial**, **Loading**, **Erreur email pris** (`PODIQ_CONFLICT`), **Erreur email invalide** (`PODIQ_VALIDATION_ERROR`).
 
 ## 6. Règles métier
-- **RM020** — Email unique insensible à la casse — sinon CONFLICT.
+- **RM020** — Email unique insensible à la casse — sinon `PODIQ_CONFLICT`.
 - **RM021** — Plan enterprise, billing, trial : **[NON IMPLÉMENTÉ]**.
 - **RM023** — Blacklist domaines jetables : **[NON IMPLÉMENTÉ]**.
 
@@ -462,7 +540,7 @@ mutation SelectWorkspace($workspaceId: ID!) {
 ## 4. États
 - **Initial** : champs pré-remplis (name = local part de l'email).
 - **Loading submit** : bouton "Continue" disabled + spinner.
-- **Erreur VALIDATION** : nom trop court/long.
+- **Erreur `PODIQ_VALIDATION_ERROR`** : nom trop court (`< 2`) ou trop long (`> 32` chars).
 
 ## 5. Règles métier
 - **RM030** — Slug non éditable par l'utilisateur ; immuable après création.
@@ -489,9 +567,10 @@ And je suis redirigé vers /onboarding/plan
 - **Rôle** : Choisir Free / Pro / Enterprise.
 
 > **[NON IMPLÉMENTÉ]** — Pas d'API de plans, pas d'intégration Stripe, pas de trial.
-> Le champ `plan` est une string libre stockée dans le workspace. Cette étape est
-> entièrement gérée côté frontend. Le backend accepte `plan` comme paramètre de
-> `createWorkspace` mais ne l'applique pas à une subscription de paiement.
+> Le champ `plan` est une string interne au workspace (valeur par défaut `"free"`).
+> **`createWorkspace` n'accepte pas de paramètre `plan`** — le backend l'initialise à `"free"`.
+> `updateWorkspace` ne prend pas non plus `plan` en paramètre (seuls `name`, `accentColor`,
+> `teamSize` sont modifiables). Cette étape est entièrement gérée côté frontend (localStorage).
 
 ## 2. Implémentation recommandée
 
@@ -862,26 +941,37 @@ mutation SetQuietHours(
 
 ## 3. Actions
 
-Marquer le workspace comme onboardé :
+**`onboardedAt` est posé automatiquement par le backend** — aucun appel frontend requis.
+
+Au moment où l'agent envoie son **premier `agentHeartbeat`** valide, le backend pose
+automatiquement `workspace.onboarded_at = now()`. C'est le signal canonique de fin d'onboarding.
+
+Le frontend doit uniquement :
+1. Rester sur cet écran et afficher le statut "Waiting for first ping" via polling ou subscription `clusterConnected`.
+2. Dès qu'un cluster `status == "connected"` est détecté → afficher la confirmation de complétion.
+3. Lire `onboardedAt` dans la réponse `currentWorkspace` pour confirmer côté frontend.
 
 ```graphql
-mutation UpdateWorkspace($workspaceId: ID!, $name: String) {
-  updateWorkspace(workspaceId: $workspaceId) {
+# Lire le statut d'onboarding
+query {
+  currentWorkspace {
     id
-    onboardedAt
+    name
+    onboardedAt   # null → onboarding incomplet ; renseigné → onboarding terminé
   }
 }
 ```
 
-> **Note** : `updateWorkspace` ne prend pas `onboarded_at` en paramètre explicite — ce champ
-> est géré côté backend. À confirmer si l'update sans champs modifiés suffit à le setter,
-> ou si un champ dédié doit être ajouté au backend.
+> **⚠️ Ne pas appeler `updateWorkspace` pour setter `onboardedAt`** — ce champ est géré
+> exclusivement par le backend via `agentHeartbeat`. `updateWorkspace` ne l'expose pas.
 
 - CTA "Open dashboard" → `/dashboard`.
 - CTA "Take the tour" → flag `tour_seen` en `localStorage`.
 
 ## 5. Règles métier
-- **RM080** — `workspace.onboarded_at` est présent dans `WorkspaceType`.
+- **RM080** — `workspace.onboardedAt` est présent dans `WorkspaceType` (nullable).
+- **RM081** — `onboardedAt` est immuable : une fois posé au premier heartbeat, il n'est jamais écrasé (ex. second cluster ajouté plus tard).
+- **RM082** — Le frontend ne doit jamais tenter de setter `onboardedAt` — comportement non supporté.
 
 ---
 
@@ -1596,28 +1686,28 @@ mutation CreateApiKey($name: String!) {
 
 | Opération | Paramètres | Retour | Auth requise |
 |-----------|-----------|--------|--------------|
-| `register` | `email`, `password` | `AuthPayload` | Non |
-| `login` | `email`, `password` | `AuthPayload` | Non |
-| `createApiKey` | `name` | `ApiKeyPayload` | user-JWT |
-| `revokeApiKey` | `keyId` | `Boolean` | workspace-JWT |
-| `createWorkspace` | `name`, `region?`, `teamSize?`, `accentColor?` | `WorkspaceType` | user-JWT |
-| `selectWorkspace` | `workspaceId` | `WorkspaceAuthPayload` | user-JWT |
-| `refreshToken` | — | `WorkspaceAuthPayload` | cookie refresh |
-| `updateWorkspace` | `workspaceId`, `name?`, `accentColor?`, `teamSize?` | `WorkspaceType` | workspace-JWT admin |
+| `register` | `email`, `password` | `AuthPayload` | Aucune (public) |
+| `login` | `email`, `password` | `AuthPayload` | Aucune (public) |
+| `createWorkspace` | `name`, `region?`, `teamSize?`, `accentColor?` | `WorkspaceType` | user-JWT ou workspace-JWT |
+| `selectWorkspace` | `workspaceId` | `WorkspaceAuthPayload` | user-JWT (obligatoire) |
+| `refreshToken` | — | `WorkspaceAuthPayload` | cookie `refresh_token` httpOnly |
+| `updateWorkspace` | `workspaceId`, `name?`, `accentColor?`, `teamSize?` | `WorkspaceType` | workspace-JWT **admin** |
+| `createApiKey` | `name` | `ApiKeyPayload` | user-JWT ou workspace-JWT |
+| `revokeApiKey` | `keyId` | `Boolean` | user-JWT ou workspace-JWT |
 | `analyzeIncident` | `podName`, `namespace`, `logs?`, `events?`, `describeOutput?` | `AnalysisJobType` | workspace-JWT |
 | `scanManifest` | `yamlContent`, `manifestType?` | `ManifestScanResultType` | workspace-JWT |
-| `generateInstallToken` | `workspaceId` | `InstallTokenPayload` | workspace-JWT admin |
-| `agentHeartbeat` | (usage agent uniquement) | — | install token |
-| `agentReportIncident` | (usage agent uniquement) | — | install token |
-| `inviteMember` | `workspaceId`, `email`, `role?` | `InvitationPayload` | workspace-JWT admin |
-| `revokeInvitation` | `invitationId` | `Boolean` | workspace-JWT admin |
-| `acceptInvitation` | `token` | `WorkspaceAuthPayload` | user-JWT |
-| `generateInviteLink` | `workspaceId` | `InvitationPayload` | workspace-JWT admin |
-| `createAlertRule` | `workspaceId`, `eventType`, `name?` | `AlertRuleType` | workspace-JWT admin |
-| `toggleAlertRule` | `ruleId`, `enabled` | `AlertRuleType` | workspace-JWT admin |
-| `connectChannel` | `workspaceId`, `channelType`, `config` (JSON string) | `ChannelPayload` | workspace-JWT admin |
-| `disconnectChannel` | `channelId` | `Boolean` | workspace-JWT admin |
-| `setQuietHours` | `workspaceId`, `enabled`, `startTime`, `endTime`, `timezone?`, `weekdaysOnly?` | `QuietHoursType` | workspace-JWT admin |
+| `generateInstallToken` | `workspaceId` | `InstallTokenPayload` | workspace-JWT **admin** |
+| `agentHeartbeat` | `installToken`, `clusterName`, `k8sVersion?` | `ClusterType` | install token (agent uniquement) |
+| `agentReportIncident` | `installToken`, `podName`, `namespace`, `logs?`, `events?`, `describeOutput?`, `namespacePods?` | `AnalysisJobType` | install token (agent uniquement) |
+| `inviteMember` | `workspaceId`, `email`, `role?` | `InvitationPayload` | workspace-JWT **admin** |
+| `revokeInvitation` | `invitationId` | `Boolean` | workspace-JWT **admin** |
+| `acceptInvitation` | `token` | `WorkspaceAuthPayload` | user-JWT ou workspace-JWT |
+| `generateInviteLink` | `workspaceId` | `InvitationPayload` | workspace-JWT **admin** |
+| `createAlertRule` | `workspaceId`, `eventType`, `name?` | `AlertRuleType` | workspace-JWT **admin** |
+| `toggleAlertRule` | `ruleId`, `enabled` | `AlertRuleType` | workspace-JWT **admin** |
+| `connectChannel` | `workspaceId`, `channelType`, `config` (JSON string sérialisé) | `ChannelPayload` | workspace-JWT **admin** |
+| `disconnectChannel` | `channelId` | `Boolean` | workspace-JWT **admin** |
+| `setQuietHours` | `workspaceId`, `enabled`, `startTime`, `endTime`, `timezone?`, `weekdaysOnly?` | `QuietHoursType` | workspace-JWT **admin** |
 
 ### Queries
 
@@ -1756,9 +1846,9 @@ mutation CreateApiKey($name: String!) {
 
 | Terme | Définition |
 |-------|------------|
-| user-JWT | Token signé par auth-service, ne contient pas de workspace_id. Durée courte. |
-| workspace-JWT | Token signé par gateway, contient workspace_id + role. Durée configurable (défaut 60 min). |
-| refresh_token | Cookie httpOnly signé par gateway. Durée 30 jours. Rotation à chaque appel refreshToken. |
+| user-JWT | Token signé par auth-service. Contient `{user_id, email, exp}`. Pas de `workspace_id`. Durée **24h** (`JWT_EXPIRY_MINUTES=1440`). **Pas de mécanisme de refresh** — si expiré, l'utilisateur doit re-login. Usage : `createWorkspace`, `selectWorkspace`, `listWorkspaces`, `createApiKey`. |
+| workspace-JWT | Token signé par gateway (`GATEWAY_JWT_SECRET`). Contient `{user_id, email, workspace_id, role, exp}`. Durée **1h** par défaut (`GATEWAY_JWT_ACCESS_EXPIRY_MINUTES=60`). Renouvelable via `refreshToken` (cookie httpOnly). Usage : toutes les opérations métier. |
+| refresh_token | Cookie `httpOnly; Secure; SameSite=Strict` signé par gateway (`GATEWAY_REFRESH_SECRET`). Durée **30 jours**. Posé par `selectWorkspace`, `login`, `acceptInvitation`. Rotation à chaque appel `refreshToken`. |
 | Workspace | Unité d'isolation tenant. 1 user peut appartenir à plusieurs. |
 | Cluster | Cluster Kubernetes connecté via l'agent PodIQ. |
 | Pod | Unité K8s trackée par l'agent. |
@@ -1767,6 +1857,22 @@ mutation CreateApiKey($name: String!) {
 | Confidence | Score textuel (ex. "high", "medium", "low") retourné par le LLM. |
 | Heartbeat | Ping périodique de l'agent (toutes les 30s) via `agentHeartbeat`. |
 | install_token | Token `wsk_xxx` généré par `generateInstallToken`, utilisé par l'agent pour s'identifier. |
+| onboardedAt | Timestamp posé **automatiquement** par le backend au premier `agentHeartbeat` réussi. `null` = onboarding incomplet. Immuable une fois posé. Le frontend ne le set jamais. |
+
+---
+
+## Annexe E — Décisions de design backend (non négociables)
+
+Ces décisions sont définitives. Le frontend doit s'y conformer sans workaround.
+
+| Décision | Raison | Impact frontend |
+|----------|--------|----------------|
+| **user-JWT sans refresh** | Credential transitoire (24h). Usage unique : `selectWorkspace`. Gérer un refresh cycle serait de la complexité sans bénéfice. | Re-login si expiré — concevoir les flows en conséquence |
+| **workspace-JWT avec cookie httpOnly** | Sécurité : le refresh token est inaccessible depuis JS, immunisé contre les XSS. | Le cookie est géré automatiquement par le navigateur — ne pas le manipuler manuellement |
+| **`onboardedAt` auto-set par agentHeartbeat** | Signal canonique fiable : l'agent est le seul à pouvoir confirmer que le cluster est connecté. | Ne jamais setter `onboardedAt` depuis le frontend |
+| **`plan` non éditable via API** | Billing non implémenté. Le champ est initialisé à `"free"` à la création. | Stocker les choix de plan en localStorage uniquement |
+| **Isolation tenant par workspace-JWT** | Le `workspace_id` du JWT scopes toutes les requêtes. Il n'y a pas de super-admin global. | Toujours envoyer le workspace-JWT correct pour le workspace actif |
+| **Codes d'erreur `PODIQ_*` stables** | Contrat API versionné — les codes ne changent pas entre versions mineures. | Brancher les handlers sur les codes, pas sur les messages texte |
 
 ---
 

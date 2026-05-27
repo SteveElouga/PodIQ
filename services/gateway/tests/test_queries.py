@@ -8,6 +8,10 @@ import time
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+from graphql import GraphQLError
+
+from app.api_codes import GRAPHQL_EXTENSION_CODE, ErrorCode
 from app.auth import TokenContext
 
 MOCK_USER_ID = "user-uuid-test"
@@ -164,9 +168,10 @@ class TestAnalysisHistoryQuery:
 
 class TestAnalysisHistoryAuth:
     def test_raises_permission_error_without_token(self):
-        import pytest
-
         from app.graphql.queries.history import _analysis_history as analysis_history
 
-        with pytest.raises(PermissionError):
+        with pytest.raises(GraphQLError) as exc_info:
             analysis_history(info=None, pod_name="pod", namespace="ns")
+        assert (
+            exc_info.value.extensions[GRAPHQL_EXTENSION_CODE] == ErrorCode.TOKEN_MISSING
+        )

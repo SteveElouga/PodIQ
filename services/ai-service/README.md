@@ -39,7 +39,8 @@ Stocke chaque résultat d'analyse (incident, pré-déploiement, CI/CD).
 | Colonne              | Type      | `incident`                              | `predeploy`                                      |
 |----------------------|-----------|-----------------------------------------|--------------------------------------------------|
 | `id`                 | UUID (PK) | —                                       | —                                                |
-| `user_id`            | UUID      | uuid4 temporaire (à corriger)           | UUID transmis par le gateway                     |
+| `user_id`            | UUID      | uuid4 temporaire (auth-service non propagé) | UUID transmis par le gateway                |
+| `workspace_id`       | UUID\|NULL | UUID du workspace (tenant isolation) — NULL pour données legacy | UUID du workspace |
 | `analysis_type`      | string    | `"incident"`                            | `"predeploy"`                                    |
 | `pod_name`           | string    | Nom du pod Kubernetes                   | `metadata.name` du manifest                      |
 | `namespace`          | string    | Namespace Kubernetes                    | `metadata.namespace` du manifest                 |
@@ -63,6 +64,7 @@ Le **Memory Engine** : garde une trace des patterns récurrents pour les inciden
 | Colonne            | Type      | Description                                              |
 |--------------------|-----------|----------------------------------------------------------|
 | `id`               | UUID (PK) | Identifiant unique du pattern                            |
+| `workspace_id`     | UUID\|NULL | UUID du workspace (tenant isolation) — NULL pour données legacy (pré-migration `0002`) |
 | `pod_name`         | string    | Nom du pod (incident) ou `metadata.name` du manifest (predeploy) |
 | `namespace`        | string    | Namespace                                                |
 | `error_type`       | string    | Type d'erreur (incident) ou catégorie du risque le plus critique (predeploy) |
@@ -71,7 +73,9 @@ Le **Memory Engine** : garde une trace des patterns récurrents pour les inciden
 | `last_seen`        | datetime  | Dernière occurrence (mis à jour automatiquement)         |
 | `last_solution`    | text      | Dernière solution proposée                               |
 
-**Contrainte unique** : `(pod_name, namespace, error_type)` — un seul enregistrement par combinaison, mis à jour à chaque nouvelle occurrence (upsert).
+**Contrainte unique** : `(workspace_id, pod_name, namespace, error_type)` — isolation par tenant. Les patterns sont scopés par workspace ; un workspace ne voit jamais les occurrences d'un autre.
+
+> **Migration `0002_workspace_id`** : les enregistrements antérieurs ont `workspace_id=NULL` (comportement global, non partagé avec les nouvelles données qui filtrent explicitement par UUID de workspace).
 
 > `ScanManifest` appelle aussi `_upsert_predeploy_pattern()` après chaque scan, de sorte que `recurrence_count` s'incrémente à chaque nouvelle analyse du même manifest avec le même type de risque dominant.
 
@@ -96,6 +100,7 @@ logs              : string         — logs du conteneur (max 2000 lignes, netto
 events            : string         — événements Kubernetes du pod
 history           : PastIncident[] — 5 derniers incidents similaires (Memory Engine)
 namespace_context : PodContext[]   — état des autres pods du namespace
+workspace_id      : string         — UUID du workspace (tenant isolation)
 ```
 
 **Sortie :**
@@ -158,6 +163,7 @@ user_id            : string         — UUID de l'utilisateur (auth-service)
 manifest_name      : string         — metadata.name du manifest
 manifest_namespace : string         — metadata.namespace du manifest
 manifest_type      : string         — kind Kubernetes (Deployment, StatefulSet, ...)
+workspace_id       : string         — UUID du workspace (tenant isolation)
 ```
 
 **Sortie :**
@@ -210,6 +216,7 @@ pod_name      : string  — filtrer par pod / nom du manifest
 namespace     : string  — filtrer par namespace
 limit         : int     — nombre maximum de résultats (défaut : 10)
 analysis_type : string  — "" = tous | "incident" | "predeploy" (optionnel)
+workspace_id  : string  — UUID du workspace — filtre les résultats par tenant (optionnel)
 ```
 
 **Sortie :**

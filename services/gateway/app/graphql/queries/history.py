@@ -22,9 +22,13 @@ def _analysis_history(
     analysis_type: str = "",
 ) -> list[AnalysisHistoryItem]:
     ctx = require_auth(info)
-    user_id = ctx.user_id
+    workspace_id = ctx.workspace_id or ""
     logger.info(
-        "query_analysis_history", pod=pod_name, namespace=namespace, user_id=user_id
+        "query_analysis_history",
+        pod=pod_name,
+        namespace=namespace,
+        user_id=ctx.user_id,
+        workspace_id=workspace_id,
     )
 
     response = invoke_grpc(
@@ -35,6 +39,7 @@ def _analysis_history(
             namespace=namespace,
             limit=limit,
             analysis_type=analysis_type,
+            workspace_id=workspace_id,
         ),
     )
 

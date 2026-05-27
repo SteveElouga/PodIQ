@@ -1,6 +1,6 @@
 # Guide de test exhaustif — PodIQ
 
-> **Version :** Phase 16 (Auth + Workspace + Agent + Invitations + Notifications + Subscriptions)
+> **Version :** Phase 17 (Auth + Workspace + Agent + Invitations + Notifications + Subscriptions + Tenant isolation complète)
 > **Audience :** Développeurs et testeurs du projet PodIQ
 > **Objectif :** Tester chaque fonctionnalité de la plateforme pas à pas, comprendre son rôle, son implémentation, et vérifier chaque cas possible avec les résultats attendus.
 
@@ -197,7 +197,7 @@ Principe de séparation des responsabilités : le gateway ne stocke aucun secret
 users
   id            UUID (PK)
   email         VARCHAR (unique)
-  password_hash VARCHAR (SHA-256 + SECRET_KEY pepper)
+  password_hash VARCHAR (Argon2id — sel unique par hash ; migration SHA-256+pepper transparente)
   created_at    TIMESTAMP
 
 api_keys
@@ -305,7 +305,7 @@ mutation {
    → décode localement, retourne TokenContext{user_id, email, workspace_id, role}
 4. Fallback : appelle auth_client.validate_jwt(token) via gRPC
    → si valid=True → retourne TokenContext{user_id, email}
-   → si valid=False → lève PermissionError
+   → si valid=False → lève `GraphQLError` avec `extensions.code = PODIQ_TOKEN_INVALID`
    → si gRPC error → lève GraphQLError("auth service unavailable")
 ```
 
@@ -432,7 +432,7 @@ mutation {
 | Création normale | nom + slug valides | workspace créé, rôle admin |
 | Slug déjà utilisé | slug existant en base | `GraphQLError: slug already taken` |
 | Slug invalide | `"Mon Workspace!"` (majuscules/spéciaux) | `GraphQLError: validation` |
-| Sans token | — | `PermissionError` |
+| Sans token | — | `GraphQLError` (`PODIQ_TOKEN_MISSING`) |
 
 **Vérifier en base :**
 ```bash
@@ -494,11 +494,11 @@ echo "<workspace-token>" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -m json
 | Scénario | Input | Résultat attendu |
 |---|---|---|
 | Sélection normale | workspaceId valide, user membre | workspace-JWT avec workspace_id + role |
-| Pas membre du workspace | workspaceId d'un autre tenant | `PermissionError` |
+| Pas membre du workspace | workspaceId d'un autre tenant | `GraphQLError` (`PODIQ_FORBIDDEN`) |
 | Workspace inexistant | UUID inconnu | `GraphQLError: Workspace not found` |
 | Avec user-JWT | token sans workspace_id | Succès (fallback gRPC) |
 | Avec workspace-JWT | token avec workspace_id | Succès (fast path local) |
-| Sans token | — | `PermissionError` |
+| Sans token | — | `GraphQLError` (`PODIQ_TOKEN_MISSING`) |
 
 ---
 
@@ -577,6 +577,94 @@ query {
 ```
 
 > `currentWorkspace` lit le `workspace_id` depuis le workspace-JWT — requiert donc un workspace-JWT (pas un user-JWT).
+
+---
+
+### 5.5 Gestion des erreurs de token — Arbres de décision
+
+#### Phase 1 — User-JWT (post-login, avant selectWorkspace)
+
+Le user-JWT expire en **24h** (`JWT_EXPIRY_MINUTES=1440` dans auth-service). Il n'y a **pas de refresh** pour ce token — si expiré, l'utilisateur doit se reconnecter via `login`.
+
+| Erreur reçue | Code extensions | Action frontend |
+|---|---|---|
+| Header absent | `PODIQ_TOKEN_MISSING` | Rediriger vers `/login` |
+| JWT invalide / expiré | `PODIQ_TOKEN_INVALID` | Rediriger vers `/login` |
+
+**Pourquoi pas de refresh pour le user-JWT ?** Il est transitoire par conception. Sa seule raison d'être est d'obtenir un workspace-JWT via `selectWorkspace`. Gérer un refresh cycle pour lui serait de la complexité sans bénéfice — si l'utilisateur met plus de 24h avant de sélectionner un workspace, il se reconnecte simplement.
+
+#### Phase 2 — Workspace-JWT (post-selectWorkspace, opérations métier)
+
+Le workspace-JWT expire en **1h** (`GATEWAY_JWT_ACCESS_EXPIRY_MINUTES=60`). Le cookie `refresh_token` (30j) permet de le renouveler sans reconnexion.
+
+```
+Appel avec workspace-JWT
+        │
+        ├─ PODIQ_TOKEN_MISSING     →  re-login complet (/login → selectWorkspace)
+        │
+        ├─ PODIQ_TOKEN_INVALID     →  appeler mutation { refreshToken }
+        │   (workspace-JWT expiré)          │
+        │                        ┌──────────┴──────────┐
+        │                  Succès (cookie OK)    Échec (cookie expiré/absent)
+        │                        │                     │
+        │               retry l'appel original  re-login → selectWorkspace
+        │
+        ├─ PODIQ_FORBIDDEN         →  afficher "droits insuffisants"
+        │   (pas admin, pas membre)          Ne jamais déconnecter l'utilisateur
+        │
+        └─ PODIQ_AUTH_GRPC_ERROR   →  "service indisponible", retry après délai
+```
+
+**Test — simuler une expiration :**
+```bash
+# Décoder le workspace-JWT pour voir son exp
+echo "<workspace-token>" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -m json.tool
+# → {"exp": 1748390400, ...}
+# Si exp < now() → token expiré → appeler refreshToken
+
+# Appel avec token expiré — résultat attendu :
+# {"errors": [{"extensions": {"code": "PODIQ_TOKEN_INVALID"}, "message": "..."}]}
+```
+
+#### Re-login avec onboarding incomplet
+
+Scénario : l'utilisateur se reconnecte mais n'avait pas encore terminé l'installation de l'agent.
+
+**Cas 1 — Un seul workspace, `onboarded_at` null :**
+```
+login → user-JWT
+→ listWorkspaces → 1 workspace retourné, onboarded_at = null
+→ selectWorkspace → workspace-JWT
+→ frontend : rediriger vers le wizard d'installation agent (étape generateInstallToken)
+```
+
+**Cas 2 — Un seul workspace, `onboarded_at` renseigné :**
+```
+login → user-JWT
+→ listWorkspaces → 1 workspace retourné, onboarded_at = "2026-05-01T..."
+→ selectWorkspace → workspace-JWT
+→ frontend : accès normal au dashboard
+```
+
+**Cas 3 — Plusieurs workspaces dont un avec onboarding incomplet :**
+```
+login → user-JWT
+→ listWorkspaces → N workspaces retournés (dont certains avec onboarded_at = null)
+→ frontend : présenter la liste de sélection, indiquer visuellement les workspaces non onboardés
+→ Après sélection du workspace non onboardé : selectWorkspace → workspace-JWT
+→ frontend : rediriger vers le wizard agent pour ce workspace
+```
+
+> **Signal canonique** : `workspace.onboarded_at` est posé **automatiquement par le backend**
+> au premier `agentHeartbeat` réussi pour ce workspace (`created=True` sur le cluster + `onboarded_at is None`).
+> Le frontend ne doit jamais le poser lui-même.
+
+| Scénario | `onboarded_at` | Action frontend |
+|---|---|---|
+| 0 workspace | — | Rediriger vers `createWorkspace` |
+| 1 workspace, null | null | `selectWorkspace` → wizard agent |
+| 1 workspace, posé | `"2026-..."` | `selectWorkspace` → dashboard |
+| N workspaces | mixte | Sélection → vérifier `onboarded_at` par workspace |
 
 ---
 
@@ -697,8 +785,8 @@ docker compose exec postgres-gateway psql -U podiq -d podiq_gateway \
 
 | Scénario | Input | Résultat attendu |
 |---|---|---|
-| Premier heartbeat | token valide (used=False) | cluster créé, status=connected, used=True |
-| Heartbeat suivant | même token (used=True) | `last_heartbeat` mis à jour — token réutilisable |
+| Premier heartbeat | token valide (used=False) | cluster créé, status=connected, used=True, **workspace.onboarded_at posé automatiquement** |
+| Heartbeat suivant | même token (used=True) | `last_heartbeat` mis à jour — token réutilisable, onboarded_at inchangé |
 | Token expiré | expires_at < now | `GraphQLError: Install token expired` |
 | Token inconnu | UUID aléatoire | `GraphQLError: Invalid install token` |
 
@@ -825,8 +913,8 @@ mutation {
 | Invitation normale | email + role valides | invitation pending, token retourné |
 | Email déjà invité | email existant pending | ancienne invitation révoquée, nouvelle créée |
 | Rôle invalide | `role: "superadmin"` | `GraphQLError: Invalid role` |
-| Non admin | workspace-JWT rôle=member | `PermissionError: Only admins can invite members` |
-| Sans token | — | `PermissionError` |
+| Non admin | workspace-JWT rôle=member | `GraphQLError` (`PODIQ_FORBIDDEN`) |
+| Sans token | — | `GraphQLError` (`PODIQ_TOKEN_MISSING`) |
 
 ---
 
@@ -887,7 +975,7 @@ Exemple : Bob est admin, invitation avec role=member
 | Invitation expirée | expires_at < now | `GraphQLError: Invitation expired` |
 | Upgrade rôle | user viewer, invitation member | rôle mis à jour → member |
 | Pas de downgrade | user admin, invitation member | rôle inchangé → admin |
-| Sans token | — | `PermissionError` |
+| Sans token | — | `GraphQLError` (`PODIQ_TOKEN_MISSING`) |
 
 **Vérifier en base :**
 ```bash
@@ -957,7 +1045,7 @@ query {
 | Liste normale | workspaceId valide | liste triée desc par createdAt |
 | Filtrer par statut | `status: "pending"` | uniquement les invitations pending |
 | Statut vide | `status: ""` | toutes les invitations |
-| Non admin | rôle member | `PermissionError: Admin access required` |
+| Non admin | rôle member | `GraphQLError` (`PODIQ_FORBIDDEN`) |
 
 ---
 
@@ -1217,8 +1305,8 @@ wscat -c "ws://localhost:8080/graphql" \
 | Scénario | Input | Résultat attendu |
 |---|---|---|
 | Auth valide | workspace-JWT dans connection_params | subscription ouverte |
-| Auth manquante | pas de connection_params | `PermissionError` fermant la connexion |
-| Auth invalide | token expiré | `PermissionError` |
+| Auth manquante | pas de connection_params | `GraphQLError` (`PODIQ_TOKEN_MISSING`) fermant la connexion |
+| Auth invalide | token expiré | `GraphQLError` (`PODIQ_TOKEN_INVALID`) |
 | Cluster connecté | agentHeartbeat appelé | événement poussé au client |
 | Job terminé | analyse complète | jobStatus pousse status=complete + result |
 | Déconnexion | client ferme WS | subscription proprement terminée |
@@ -1281,16 +1369,18 @@ _analyze_incident(info, pod_name, namespace)
 
 **Étape 2 — Worker (gateway/app/tasks.py) :**
 ```
-analyze_incident_task(job_id, user_id, pod_name, namespace, logs, events,
+analyze_incident_task(job_id, workspace_id, pod_name, namespace, logs, events,
                       describe_output, namespace_pods)
   1. AnalysisJob.objects.get(id=job_id) → status RUNNING, error="" + save
   2. _build_namespace_context(namespace_pods, pod_name, CORRELATION_WINDOW_MINUTES)
      → [PodContext{pod_name, status, in_correlation_window, seconds_before_reference}]
      (namespace_pods JSON envoyé par l'agent via agentReportIncident)
-  3. invoke_grpc(AI, get_history(pod_name, namespace, limit=5))
-     → HistoryResponse{items: [PastIncident...]}
+  3. invoke_grpc(AI, get_history(pod_name, namespace, limit=5, workspace_id=workspace_id))
+     → HistoryResponse{items: [PastIncident...]} — scopé par workspace (tenant isolation)
   4. Construit IncidentRequest{pod_name, namespace, status, logs, events,
-                               history, namespace_context}
+                               history, namespace_context, workspace_id}
+     workspace_id = champ 8 du proto — propagé jusqu'à ai-service pour scoper
+     analyses et incident_patterns
   5. invoke_grpc(AI, analyze_incident(request))
      → AnalysisResult{error_type, root_cause, explanation, solution, confidence,
                        is_recurring, recurrence_count, correlated_service, correlation_explanation}
@@ -1381,10 +1471,10 @@ curl -s -X POST http://localhost:8080/graphql \
 | AI indisponible | ai-service down | `failed` | `error: "gRPC connection refused"` |
 | Timeout Ollama | Inférence > 5min | `failed` | `error: "time limit exceeded"` |
 | Job inexistant | jobId inconnu | — | `GraphQLError: Job not found` |
-| Mauvais utilisateur | jobId d'un autre user | — | `GraphQLError: Job not found` |
+| Mauvais workspace | jobId d'un autre workspace (workspace_id différent dans le JWT) | — | `GraphQLError: Job not found` |
 | UUID invalide | jobId = "pas-un-uuid" | — | `GraphQLError: Job not found` |
-| Sans token | Authorization absent | — | `PermissionError` |
-| Token expiré | workspace-JWT > 1h | — | `PermissionError` |
+| Sans token | Authorization absent | — | `GraphQLError` (`PODIQ_TOKEN_MISSING`) |
+| Token expiré | workspace-JWT > 1h | — | `GraphQLError` (`PODIQ_TOKEN_INVALID`) |
 
 ### 10.3 Vérifier l'état du job en base de données
 
@@ -1473,7 +1563,7 @@ spec:
 | Secret en clair | Env var password en clair | `block` |
 | YAML invalide | Contenu non parseable | `GraphQLError: YAML parsing failed` |
 | yaml_content vide | `""` | `GraphQLError` |
-| Sans token | — | `PermissionError` |
+| Sans token | — | `GraphQLError` (`PODIQ_TOKEN_MISSING`) |
 
 ---
 
@@ -1509,7 +1599,7 @@ query {
 | Historique existant | Analyses passées pour ce pod | Liste triée desc par date |
 | Pod sans historique | Premier incident | `[]` (liste vide) |
 | limit=1 | — | Maximum 1 entrée |
-| Sans token | — | `PermissionError` |
+| Sans token | — | `GraphQLError` (`PODIQ_TOKEN_MISSING`) |
 
 ---
 
@@ -1695,17 +1785,19 @@ docker compose exec postgres-analyzer psql -U podiq -d podiq_analyzer -c \
 
 ### Ce que c'est
 
-À chaque analyse complète, l'ai-service **mémorise** le résultat et incrémente le compteur de récurrence par `(pod_name, namespace, error_type)`. Lors de la prochaine analyse du même pod, le gateway injecte cet historique dans le prompt Ollama.
+À chaque analyse complète, l'ai-service **mémorise** le résultat et incrémente le compteur de récurrence par `(workspace_id, pod_name, namespace, error_type)`. La clé unique inclut `workspace_id` depuis la migration `0002_workspace_id` — deux workspaces différents avec des pods homonymes ont des patterns strictement isolés. Lors de la prochaine analyse du même pod dans le même workspace, le gateway injecte cet historique dans le prompt Ollama.
 
 ### Test de la récurrence
 
 ```bash
 # 1. Première analyse → isRecurring: false, recurrenceCount: 1
-# 2. Deuxième analyse (même pod) → isRecurring: true, recurrenceCount: 2
+# 2. Deuxième analyse (même pod, même workspace) → isRecurring: true, recurrenceCount: 2
 
-# Vérifier en base ai-service
+# Vérifier en base ai-service (avec workspace_id)
 docker compose exec postgres-ai psql -U podiq -d podiq_ai -c \
-  "SELECT pod_name, namespace, error_type, occurrence_count FROM incident_patterns ORDER BY occurrence_count DESC LIMIT 10;"
+  "SELECT workspace_id, pod_name, namespace, error_type, occurrence_count FROM incident_patterns ORDER BY occurrence_count DESC LIMIT 10;"
+
+# Les lignes avec workspace_id=NULL sont des données legacy (pré-migration) — comportement global
 ```
 
 ---
@@ -1714,7 +1806,7 @@ docker compose exec postgres-ai psql -U podiq -d podiq_ai -c \
 
 ### Ce que c'est
 
-Tous les services PodIQ émettent des logs structurés JSON (via `structlog`). Promtail collecte ces logs depuis le socket Docker et les envoie à Loki. Grafana expose un dashboard de visualisation.
+Tous les services PodIQ émettent des logs structurés JSON (via `structlog`). Le **Loki Docker Log Driver** (plugin installé sur le daemon Docker) capte le stdout/stderr de chaque conteneur et les pousse directement vers Loki (`http://host.docker.internal:3100/loki/api/v1/push`) — aucun socket `/var/run/docker.sock` monté dans les conteneurs (SOC2 §8.5). Grafana expose un dashboard de visualisation en 9 sections. En production K8s, un DaemonSet Promtail remplace le log driver.
 
 ### 17.1 Accéder à Grafana
 
@@ -1960,8 +2052,8 @@ echo $RESULT | python3 -m json.tool
 | A02 | register | email déjà utilisé | `GraphQLError` | Critique |
 | A03 | login | credentials corrects | nouveau user-JWT | Critique |
 | A04 | login | mauvais password | `GraphQLError` | Critique |
-| A05 | JWT | mutation protégée sans token | `PermissionError` | Critique |
-| A06 | JWT | token expiré | `PermissionError` | Critique |
+| A05 | JWT | mutation protégée sans token | `GraphQLError` (`PODIQ_TOKEN_MISSING`) | Critique |
+| A06 | JWT | token expiré | `GraphQLError` (`PODIQ_TOKEN_INVALID`) | Critique |
 | A07 | API Key | clé valide → CI/CD | 200 + exit_code | Critique |
 | A08 | API Key | clé révoquée → CI/CD | 401 `PODIQ_TOKEN_INVALID` | Critique |
 
@@ -1972,7 +2064,7 @@ echo $RESULT | python3 -m json.tool
 | W01 | createWorkspace | nom + slug valides | workspace créé, owner=admin | Critique |
 | W02 | createWorkspace | slug déjà pris | `GraphQLError: slug already taken` | Critique |
 | W03 | selectWorkspace | user est membre | workspace-JWT avec workspace_id + role | Critique |
-| W04 | selectWorkspace | user non membre | `PermissionError` | Critique |
+| W04 | selectWorkspace | user non membre | `GraphQLError` (`PODIQ_FORBIDDEN`) | Critique |
 | W05 | refreshToken | cookie refresh valide | nouveau workspace-JWT + rotation cookie | Haute |
 | W06 | refreshToken | cookie absent | `GraphQLError: No refresh token` | Haute |
 | W07 | workspace-JWT fast path | token avec workspace_id | décodé localement (pas de gRPC) | Haute |
@@ -1983,9 +2075,9 @@ echo $RESULT | python3 -m json.tool
 | ID | Fonctionnalité | Input | Résultat attendu | Criticité |
 |---|---|---|---|---|
 | AG01 | generateInstallToken | workspaceId valide, admin | token wsk_xxx | Critique |
-| AG02 | generateInstallToken | non admin | `PermissionError` | Haute |
-| AG03 | agentHeartbeat | token valide (used=False) | cluster créé, status=connected, used=True | Critique |
-| AG04 | agentHeartbeat | token valide (used=True) | last_heartbeat mis à jour | Critique |
+| AG02 | generateInstallToken | non admin | `GraphQLError` (`PODIQ_FORBIDDEN`) | Haute |
+| AG03 | agentHeartbeat | token valide (used=False) | cluster créé, status=connected, used=True, workspace.onboarded_at posé | Critique |
+| AG04 | agentHeartbeat | token valide (used=True) | last_heartbeat mis à jour, onboarded_at inchangé | Critique |
 | AG05 | agentHeartbeat | token expiré | `GraphQLError: Install token expired` | Critique |
 | AG06 | agentReportIncident | token valide | jobId créé, accepted=true | Critique |
 | AG07 | clusterStatus | workspaceId avec cluster | statut cluster retourné | Haute |
@@ -1996,7 +2088,7 @@ echo $RESULT | python3 -m json.tool
 |---|---|---|---|---|
 | INV01 | inviteMember | email + role, admin | invitation pending + token | Critique |
 | INV02 | inviteMember | email déjà invité | ancienne révoquée, nouvelle créée | Haute |
-| INV03 | inviteMember | non admin | `PermissionError` | Critique |
+| INV03 | inviteMember | non admin | `GraphQLError` (`PODIQ_FORBIDDEN`) | Critique |
 | INV04 | acceptInvitation | invitation.token valide | workspace-JWT + status=accepted | Critique |
 | INV05 | acceptInvitation | invitation.id (mauvais champ) | `GraphQLError: not found` | Critique |
 | INV06 | acceptInvitation | invitation expirée | `GraphQLError: Invitation expired` | Haute |
@@ -2004,14 +2096,14 @@ echo $RESULT | python3 -m json.tool
 | INV08 | acceptInvitation | pas de downgrade (admin→member) | rôle inchangé | Critique |
 | INV09 | revokeInvitation | invitationId, admin | invitation revoked | Haute |
 | INV10 | listInvitations | workspaceId, admin | liste triée desc | Haute |
-| INV11 | listInvitations | non admin | `PermissionError` | Haute |
+| INV11 | listInvitations | non admin | `GraphQLError` (`PODIQ_FORBIDDEN`) | Haute |
 
 ### Subscriptions WebSocket
 
 | ID | Fonctionnalité | Input | Résultat attendu | Criticité |
 |---|---|---|---|---|
 | SUB01 | clusterConnected | workspace-JWT dans connection_params | subscription ouverte | Critique |
-| SUB02 | clusterConnected | auth manquante | `PermissionError` | Critique |
+| SUB02 | clusterConnected | auth manquante | `GraphQLError` (`PODIQ_TOKEN_MISSING`) | Critique |
 | SUB03 | clusterConnected | agentHeartbeat appelé | événement poussé | Critique |
 | SUB04 | jobStatus | analyse complète | status=complete + result poussés | Haute |
 
@@ -2024,7 +2116,7 @@ echo $RESULT | python3 -m json.tool
 | I03 | analysisJob | après succès | status=complete + result | Critique |
 | I04 | analysisJob | après échec gRPC | status=failed + error | Critique |
 | I05 | analysisJob | jobId inconnu | `GraphQLError: Job not found` | Haute |
-| I06 | analysisJob | jobId d'un autre user | `GraphQLError: Job not found` | Critique |
+| I06 | analysisJob | jobId d'un autre workspace (workspace_id différent) | `GraphQLError: Job not found` | Critique |
 | I07 | Memory Engine | 1ère analyse | isRecurring=false | Haute |
 | I08 | Memory Engine | 2ème analyse même pod | isRecurring=true, recurrenceCount=2 | Haute |
 
@@ -2171,8 +2263,16 @@ docker compose run --rm --no-deps gateway python -m pytest -v tests/
 ### Logs non visibles dans Grafana
 
 ```bash
-docker compose logs promtail | grep -i "error"
+# Vérifier que Loki est opérationnel
 curl -s http://localhost:3100/ready  # Attendu : "ready"
+
+# Vérifier que le log driver pousse bien vers Loki (inspecter les labels d'un conteneur)
+docker inspect podiq-gateway | grep -A5 "LogConfig"
+
+# Tester une requête Loki directement
+curl -s "http://localhost:3100/loki/api/v1/query_range" \
+  --data-urlencode 'query={namespace="podiq"}' \
+  --data-urlencode 'limit=5' | python3 -m json.tool | head -30
 ```
 
 ### Tester la connectivité gRPC entre services

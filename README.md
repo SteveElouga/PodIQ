@@ -281,7 +281,7 @@ podiq scan manifest <path/to/deployment.yaml>
 [postgres-gateway] ← Gateway sessions, workspaces, clusters
 
   Redis (Dramatiq queue + cache)
-  Promtail → Loki → Grafana
+  Loki Log Driver → Loki → Grafana
 ```
 
 **Principe fondamental :** chaque service est un microservice **entièrement indépendant**.
@@ -311,7 +311,7 @@ podiq scan manifest <path/to/deployment.yaml>
                                           analyzer]
 
 [postgres-gateway] ← workspaces, clusters, analysis_jobs, invitations...
-Redis (Dramatiq queue) — Promtail → Loki → Grafana
+Redis (Dramatiq queue) — Loki Log Driver → Loki → Grafana
 ```
 
 ---
@@ -380,7 +380,7 @@ podiq/
 │   ├── nginx/nginx.conf
 │   ├── grafana/dashboards/podiq-overview.json
 │   ├── loki/loki-config.yml
-│   └── promtail/promtail-config.yml
+│   └── promtail/Dockerfile.k8s-reference  # config K8s production (référence)
 │
 ├── shared/
 │   ├── utils/
@@ -669,7 +669,7 @@ Application crashes at startup due to missing DATABASE_URL env variable
 | Cache / Queue         | Redis                             | Jobs async, rate limiting, cache API keys                                     |
 | IA locale             | Ollama + mistral                  | Gratuit, Dockerisable, confidentialité logs — configurable via `OLLAMA_MODEL` |
 | Logs centralisés      | Grafana Loki                      | Cohérent avec produit orienté observabilité                                   |
-| Agent logs            | Promtail                          | Lit stdout Docker → Loki ; services PodIQ émettent des lignes **JSON** (`structlog`, fichier commun `shared/podiq_logging/structlog_setup.py`) avec `timestamp`, `level`, `service`, `event` pour filtres Grafana/Loki |
+| Logs applicatifs      | Loki Docker Log Driver            | Plugin Docker (daemon level) intercepte stdout de chaque conteneur et pousse vers Loki via HTTP — aucun socket Docker exposé. Services émettent du JSON (`structlog`, `shared/podiq_logging/structlog_setup.py`) avec `timestamp`, `level`, `service`, `event`. Rétention 90 j (SOC2 §7.3). |
 | Visualisation         | Grafana                           | Debug rapide + dashboard incidents                                            |
 | Validation            | Pydantic v2                       | Parsing IA, schemas typés                                                     |
 | YAML parsing          | PyYAML                            | Pre-deploy scanner                                                            |
@@ -748,6 +748,7 @@ grpcio==1.80.0
 protobuf==6.31.1
 python-dotenv==1.1.0
 structlog==25.4.0
+argon2-cffi==23.1.0
 pytest==8.3.5
 pytest-django==4.11.1
 ```
@@ -792,8 +793,7 @@ Les versions exactes peuvent évoluer ; se référer au fichier **`requirements-
 | `redis`             | Queue async Dramatiq + cache                   |
 | `ollama`            | Modèle IA local Mistral 7B                     |
 | `grafana`           | Visualisation logs + dashboard incidents       |
-| `loki`              | Agrégation logs centralisés                    |
-| `promtail`          | Agent collecte logs Docker                     |
+| `loki`              | Agrégation logs centralisés (rétention 90 j)   |
 | `nginx`             | Reverse proxy                                  |
 
 
@@ -802,7 +802,7 @@ Les versions exactes peuvent évoluer ; se référer au fichier **`requirements-
 ```yaml
 networks:
   backend:       # gateway, services, redis, tous les postgres
-  observability: # grafana, loki, promtail
+  observability: # grafana, loki (Promtail supprimé — Loki Log Driver utilisé)
 
 volumes:
   postgres_gateway_data:
@@ -816,13 +816,19 @@ volumes:
 
 ### Dashboard Grafana PodIQ
 
-Dashboard `podiq-overview.json` configuré pour visualiser :
+Dashboard `podiq-overview.json` — 9 sections, 58 panneaux (Loki) :
 
-- Nombre d'analyses par heure / jour
-- Distribution des `error_type` détectés
-- Top 10 pods les plus incidents (score récurrence)
-- Latence des appels Ollama
-- Score de risque des scans pre-deploy
+| Section | Métriques clés |
+|---------|---------------|
+| Pipeline d'analyse | Jobs démarrés / complétés / échoués, incidents récurrents (Memory Engine) |
+| Santé des services | Erreurs globales, gRPC failures, Ollama timeouts, JWT invalides |
+| Auth & Sécurité | Logins, inscriptions, API Keys, migrations Argon2id, accès refusés |
+| Pre-deploy Scanner | Distribution safe / warning / block |
+| CI/CD Pipeline Gate | Exit codes 0/1/2, déploiements bloqués |
+| Agent K8s | Heartbeats, incidents reportés, install tokens, clusters connectés |
+| Workspaces & Invitations | Workspaces créés, invitations envoyées / acceptées |
+| Notifications | Envois, échecs, suppressions quiet hours |
+| Logs bruts | Volume par service, tous les logs PodIQ |
 
 ### Nginx — Résolution DNS dynamique
 
@@ -1317,7 +1323,7 @@ Return ONLY this JSON:
 - Masquer les secrets dans les logs avant envoi à Ollama (regex sur `password`, `secret`, `token`, `key`)
 - RBAC K8s minimal : `get`, `list` sur pods/logs uniquement
 - Validation JWT sur chaque requête GraphQL
-- Validation API Key sur endpoint CI/CD (hash bcrypt en base)
+- Validation API Key sur endpoint CI/CD (hash SHA-256 en base — haute entropie, recherche déterministe)
 - Rate limiting par utilisateur et par API Key (Redis)
 - Logs bruts : TTL 30 jours maximum
 - Variables sensibles uniquement via `.env` / Docker secrets
@@ -1347,7 +1353,7 @@ Return ONLY this JSON:
 - AI Service : `AnalyzeIncident` + `ScanManifest` + `GetAnalysisHistory`
 - Auth Service : `Register` + `Login` + `ValidateJWT` + `CreateApiKey` + `ValidateApiKey` + `RevokeApiKey`
 - Gateway GraphQL complet : `analyzeIncident`, `scanManifest`, `register`, `login`, `analysisHistory`
-- Loki + Promtail + Grafana configurés (labels `service`, `namespace`, rétention 7j)
+- Loki + Grafana configurés via Loki Docker Log Driver (labels `service`, `namespace`, rétention 90j — SOC2 §7.3)
 - README.md dans chaque microservice (FR, analogies, gRPC I/O, DB, env vars)
 
 ### Semaine 2 — IA & Différenciants
@@ -1455,7 +1461,7 @@ Return ONLY this JSON:
 9.  Pre-deploy scan : ParseManifest + prompt predeploy
 10. Endpoint CI/CD REST + API Keys
 11. Redis Queue Dramatiq (flux async complet)
-12. Loki + Grafana + Promtail + dashboard
+12. Loki + Grafana (log driver, sans Promtail) + dashboard podiq-overview.json
 13. Auth & Workspace : JWT deux temps + refresh token httpOnly cookie
 14. Agent GraphQL-first : agentHeartbeat + agentReportIncident + generateInstallToken
 15. GraphQL Subscriptions : clusterConnected + jobStatus (WebSocket via graphql-ws)

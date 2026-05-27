@@ -44,6 +44,7 @@ repos:
       - id: hadolint-dockerfiles
         name: hadolint (Dockerfile)
         language: python
+        language_version: python3.12
         additional_dependencies: [hadolint-bin==2.14.0]
         entry: hadolint
         types: [dockerfile]
@@ -51,6 +52,7 @@ repos:
       - id: mypy-services
         name: mypy (services Django)
         language: python
+        language_version: python3.12
         additional_dependencies:
           - mypy==1.15.0
           - Django==5.2.1
@@ -74,6 +76,7 @@ repos:
           - pydantic==2.13.4
           - kubernetes==32.0.1
           - PyYAML==6.0.2
+          - argon2-cffi==23.1.0
         entry: python scripts/run_mypy_precommit.py
         types_or: [python]
         pass_filenames: true

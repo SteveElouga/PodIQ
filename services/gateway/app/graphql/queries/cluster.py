@@ -1,8 +1,10 @@
 import strawberry
 import structlog
 from asgiref.sync import sync_to_async
+from graphql import GraphQLError
 from strawberry.types import Info
 
+from app.api_codes import ErrorCode, graphql_error_extensions
 from app.auth import require_auth
 from app.graphql.types import ClusterType
 from core.models import Cluster, WorkspaceMember
@@ -16,7 +18,10 @@ def _cluster_status(info: Info, workspace_id: str) -> list[ClusterType]:
     try:
         WorkspaceMember.objects.get(workspace_id=workspace_id, user_id=ctx.user_id)
     except WorkspaceMember.DoesNotExist:
-        raise PermissionError("Access denied to workspace")
+        raise GraphQLError(
+            "Access denied to workspace",
+            extensions=graphql_error_extensions(ErrorCode.FORBIDDEN),
+        )
 
     clusters = Cluster.objects.filter(workspace_id=workspace_id).order_by("created_at")
 

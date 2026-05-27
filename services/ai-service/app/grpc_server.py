@@ -46,8 +46,12 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
         request: ai_pb2.IncidentRequest,
         context: grpc.ServicerContext,
     ) -> ai_pb2.AnalysisResult:
+        workspace_id: str | None = request.workspace_id or None
         logger.info(
-            "analyze_incident", pod=request.pod_name, namespace=request.namespace
+            "analyze_incident",
+            pod=request.pod_name,
+            namespace=request.namespace,
+            workspace_id=workspace_id,
         )
 
         try:
@@ -60,11 +64,14 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
             context.set_details(str(exc))
             return ai_pb2.AnalysisResult()
 
-        _upsert_pattern(request, result)
+        _upsert_pattern(request, result, workspace_id=workspace_id)
         recurrence_count = _get_recurrence_count(
-            request.pod_name, request.namespace, result.error_type
+            request.pod_name,
+            request.namespace,
+            result.error_type,
+            workspace_id=workspace_id,
         )
-        _save_analysis(request, result, recurrence_count)
+        _save_analysis(request, result, recurrence_count, workspace_id=workspace_id)
 
         return ai_pb2.AnalysisResult(
             error_type=result.error_type,
@@ -87,9 +94,12 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
             "get_analysis_history", pod=request.pod_name, namespace=request.namespace
         )
 
+        workspace_id: str | None = request.workspace_id or None
         filters: dict = {"pod_name": request.pod_name, "namespace": request.namespace}
         if request.analysis_type:
             filters["analysis_type"] = request.analysis_type
+        if workspace_id:
+            filters["workspace_id"] = workspace_id
         qs = Analysis.objects.filter(**filters).order_by("-created_at")
 
         limit = request.limit if request.limit > 0 else 10
@@ -148,7 +158,8 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
         request: ai_pb2.ManifestScanRequest,
         context: grpc.ServicerContext,
     ) -> ai_pb2.ManifestScanResult:
-        logger.info("scan_manifest")
+        workspace_id: str | None = request.workspace_id or None
+        logger.info("scan_manifest", workspace_id=workspace_id)
 
         try:
             prompt = predeploy_prompt.build(request)
@@ -160,8 +171,8 @@ class AIServicer(ai_pb2_grpc.AIServiceServicer):
             context.set_details(str(exc))
             return ai_pb2.ManifestScanResult()
 
-        _save_predeploy_analysis(request, result)
-        _upsert_predeploy_pattern(request, result)
+        _save_predeploy_analysis(request, result, workspace_id=workspace_id)
+        _upsert_predeploy_pattern(request, result, workspace_id=workspace_id)
         logger.info(
             "scan_manifest_complete",
             manifest=request.manifest_name,
@@ -228,7 +239,9 @@ def _parse_scan(raw: str) -> ManifestScanResponse:
 
 
 def _save_predeploy_analysis(
-    request: ai_pb2.ManifestScanRequest, result: ManifestScanResponse
+    request: ai_pb2.ManifestScanRequest,
+    result: ManifestScanResponse,
+    workspace_id: str | None = None,
 ) -> None:
     try:
         user_uuid = uuid.UUID(request.user_id)
@@ -251,19 +264,29 @@ def _save_predeploy_analysis(
     confidence_map = {"block": "high", "warning": "medium", "safe": "low"}
     confidence = confidence_map.get(result.risk_level, "low")
 
-    # Check for existing pattern before saving so is_recurring is accurate
+    # Check for existing pattern (scoped to workspace) before saving.
+    pattern_filter: dict = {
+        "pod_name": request.manifest_name,
+        "namespace": request.manifest_namespace,
+        "error_type": error_type,
+        "workspace_id": workspace_id,
+    }
     is_recurring = (
-        IncidentPattern.objects.filter(
-            pod_name=request.manifest_name,
-            namespace=request.manifest_namespace,
-            error_type=error_type,
-        ).exists()
+        IncidentPattern.objects.filter(**pattern_filter).exists()
         if request.manifest_name and error_type
         else False
     )
 
+    ws_uuid: uuid.UUID | None = None
+    if workspace_id:
+        try:
+            ws_uuid = uuid.UUID(workspace_id)
+        except ValueError:
+            logger.warning("predeploy_invalid_workspace_id", workspace_id=workspace_id)
+
     Analysis.objects.create(
         user_id=user_uuid,
+        workspace_id=ws_uuid,
         analysis_type="predeploy",
         pod_name=request.manifest_name,
         namespace=request.manifest_namespace,
@@ -287,8 +310,18 @@ def _save_predeploy_analysis(
 
 
 def _save_analysis(
-    request: ai_pb2.IncidentRequest, result: AnalysisResponse, recurrence_count: int = 0
+    request: ai_pb2.IncidentRequest,
+    result: AnalysisResponse,
+    recurrence_count: int = 0,
+    workspace_id: str | None = None,
 ) -> Analysis:
+    ws_uuid: uuid.UUID | None = None
+    if workspace_id:
+        try:
+            ws_uuid = uuid.UUID(workspace_id)
+        except ValueError:
+            logger.warning("incident_invalid_workspace_id", workspace_id=workspace_id)
+
     risks = [
         {
             "severity": result.confidence,
@@ -307,7 +340,8 @@ def _save_analysis(
             }
         )
     return Analysis.objects.create(
-        user_id=uuid.uuid4(),  # replaced by gateway-provided user_id in full flow
+        user_id=uuid.uuid4(),  # auth-service user_id not carried in IncidentRequest
+        workspace_id=ws_uuid,
         analysis_type="incident",
         pod_name=request.pod_name,
         namespace=request.namespace,
@@ -324,10 +358,15 @@ def _save_analysis(
     )
 
 
-def _upsert_pattern(request: ai_pb2.IncidentRequest, result: AnalysisResponse) -> None:
+def _upsert_pattern(
+    request: ai_pb2.IncidentRequest,
+    result: AnalysisResponse,
+    workspace_id: str | None = None,
+) -> None:
     if not request.pod_name:
         return
     obj, created = IncidentPattern.objects.get_or_create(
+        workspace_id=workspace_id,
         pod_name=request.pod_name,
         namespace=request.namespace,
         error_type=result.error_type,
@@ -340,7 +379,9 @@ def _upsert_pattern(request: ai_pb2.IncidentRequest, result: AnalysisResponse) -
 
 
 def _upsert_predeploy_pattern(
-    request: ai_pb2.ManifestScanRequest, result: ManifestScanResponse
+    request: ai_pb2.ManifestScanRequest,
+    result: ManifestScanResponse,
+    workspace_id: str | None = None,
 ) -> None:
     if not request.manifest_name:
         return
@@ -353,6 +394,7 @@ def _upsert_predeploy_pattern(
     solution = "; ".join(r.fix for r in sorted_risks if r.fix)[:500]
 
     obj, created = IncidentPattern.objects.get_or_create(
+        workspace_id=workspace_id,
         pod_name=request.manifest_name,
         namespace=request.manifest_namespace,
         error_type=error_type,
@@ -364,9 +406,15 @@ def _upsert_predeploy_pattern(
         obj.save(update_fields=["occurrence_count", "last_solution", "last_seen"])
 
 
-def _get_recurrence_count(pod_name: str, namespace: str, error_type: str) -> int:
+def _get_recurrence_count(
+    pod_name: str,
+    namespace: str,
+    error_type: str,
+    workspace_id: str | None = None,
+) -> int:
     try:
         return IncidentPattern.objects.get(
+            workspace_id=workspace_id,
             pod_name=pod_name,
             namespace=namespace,
             error_type=error_type,

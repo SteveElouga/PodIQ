@@ -283,6 +283,84 @@ Ne pas supposer une réponse JSON « pure » de tous les modèles Ollama ; prév
 
 ---
 
+## [2026-05-27] pre-commit — `Django==5.2.1` incompatible avec Python 3.9 dans les hooks locaux
+
+**Erreur**
+```
+ERROR: Could not find a version that satisfies the requirement Django==5.2.1
+ERROR: No matching distribution found for Django==5.2.1
+```
+
+**Service concerné** : hook `mypy-services` (local) dans `.pre-commit-config.yaml`
+
+**Cause**
+Le hook `mypy-services` utilise `language: python` sans `language_version` explicite. Pre-commit prend alors le premier `python3` résolvable dans le PATH, qui était Python 3.9 (Python système macOS). Django 5.x requiert **Python ≥ 3.10** — l'installation échoue dans l'environnement isolé que pre-commit crée pour le hook.
+
+Symptômes typiques menant à ce problème :
+1. Présence d'un `venv/` cassé créé avec une version Python désinstallée (ex. Python 3.14) — pre-commit l'active et hérite du mauvais interpréteur.
+2. PATH ne contenant pas `/opt/homebrew/bin` ou `/opt/homebrew/opt/python@3.12/libexec/bin` → `python3` pointe vers le Python système Apple (3.9.6).
+
+**Solution**
+1. Installer Python 3.12 via Homebrew (une seule fois par machine) :
+```bash
+brew install python@3.12
+```
+
+2. Ajouter `language_version: python3.12` **explicitement** aux deux hooks locaux dans `.pre-commit-config.yaml` :
+```yaml
+- id: hadolint-dockerfiles
+  language: python
+  language_version: python3.12          # ← ajouté
+  ...
+
+- id: mypy-services
+  language: python
+  language_version: python3.12          # ← ajouté
+  ...
+```
+Pre-commit cherche `python3.12` dans le PATH système (pas dans le venv courant). `/opt/homebrew/bin/python3.12` est trouvé directement.
+
+3. Purger le cache pre-commit (envs créés avec Python 3.9) et réinstaller :
+```bash
+pre-commit clean
+pre-commit install
+```
+
+**Règle à retenir**
+Dès qu'un hook `language: python` installe des dépendances qui requièrent Python ≥ 3.10 (Django 5.x, psycopg 3.x…), toujours préciser `language_version: python3.12` (ou supérieur). Ne pas compter sur `python3` du PATH — sa résolution dépend de l'environnement shell et peut pointer vers le Python système macOS (3.9).
+
+---
+
+## [2026-05-27] mypy (pre-commit) — `Cannot find implementation or library stub for module named "argon2"`
+
+**Erreur**
+```
+app/grpc_server.py:11: error: Cannot find implementation or library stub for module named "argon2"  [import-not-found]
+app/grpc_server.py:12: error: Cannot find implementation or library stub for module named "argon2.exceptions"  [import-not-found]
+Found 2 errors in 1 file (checked 13 source files)
+```
+
+**Service concerné** : hook `mypy-services` (pre-commit) → `auth-service/app/grpc_server.py`
+
+**Cause**
+Le hook mypy tourne dans un environnement isolé créé par pre-commit. Cet environnement n'installe que les paquets listés dans `additional_dependencies`. `argon2-cffi` (qui fournit le module `argon2`) avait été ajouté au `requirements.txt` de l'auth-service mais pas à la liste `additional_dependencies` du hook dans `.pre-commit-config.yaml`.
+
+**Solution**
+Ajouter `argon2-cffi==23.1.0` aux `additional_dependencies` du hook `mypy-services` dans `.pre-commit-config.yaml` :
+
+```yaml
+- id: mypy-services
+  additional_dependencies:
+    ...
+    - PyYAML==6.0.2
+    - argon2-cffi==23.1.0    # ← ajouté
+```
+
+**Règle à retenir**
+Chaque nouvelle dépendance ajoutée à un `requirements.txt` de service doit être **également ajoutée** aux `additional_dependencies` du hook `mypy-services` dans `.pre-commit-config.yaml`. Le hook mypy est isolé — il ne lit pas les `requirements.txt` des services. Sans cette synchronisation, mypy échoue avec `import-not-found` dès que le module est importé dans un fichier analysé.
+
+---
+
 ## [2026-05-12] pre-commit — « no files to check » ou secrets / baseline
 
 **Symptôme**
@@ -544,5 +622,242 @@ Puis :
 
 **Règle à retenir**
 Le 4e argument de `agent_simulate.sh` est un **JWT workspace-scoped** (commence par `eyJ`), pas un workspace UUID. Si vous n'avez que le UUID, appeler d'abord `mutation { selectWorkspace(...) { token } }`.
+
+---
+
+## [2026-05-25] Docker Desktop macOS — `operation not permitted` sur bind mounts vers `~/Documents`
+
+**Erreur**
+```
+Error response from daemon: error while creating mount source path
+'/host_mnt/Users/apple/Documents/PodIQ/infra/loki/loki-config.yml':
+mkdir /host_mnt/Users/apple/Documents: operation not permitted
+```
+
+Et avec `configs: file:` (Compose v5) :
+```
+Error response from daemon: invalid mount config for type "bind":
+stat /host_mnt/Users/apple/Documents/PodIQ/infra/loki/loki-config.yml:
+operation not permitted
+```
+
+**Services concernés** : `loki`, `promtail`, `grafana`, `nginx` (tout service avec un bind mount vers `./infra/`)
+
+**Cause**
+Docker Desktop sur macOS gère le partage de fichiers via une VM Linux interne. Par défaut, seuls certains chemins hôte sont accessibles (typiquement `/Users/<user>`, `/tmp`, `/var/folders`). Si Docker Desktop n'a pas explicitement `/Users/apple/Documents` dans ses répertoires autorisés, toute tentative de bind mount depuis ce chemin échoue avec `operation not permitted`.
+
+La directive `configs: file:` de Docker Compose est trompeuse : elle crée **également** un bind mount en coulisses et souffre du même blocage — l'erreur devient `invalid mount config for type "bind"` au lieu de `error while creating mount source path`, mais la cause est identique.
+
+**Ce qui ne fonctionne pas**
+```yaml
+# Tentative 1 — bind mount classique (échoue)
+volumes:
+  - ./infra/loki/loki-config.yml:/etc/loki/config.yml:ro
+
+# Tentative 2 — configs: file: (échoue aussi, bind mount interne)
+configs:
+  loki_config:
+    file: ./infra/loki/loki-config.yml
+services:
+  loki:
+    configs:
+      - source: loki_config
+        target: /etc/loki/config.yml
+```
+
+**Solution retenue — Dockerfiles dédiés par service d'infra**
+
+Créer un `Dockerfile` minimal dans chaque répertoire `infra/<service>/` qui `COPY` la config au moment du build. Docker lit les fichiers via le **build context** (mécanisme build, pas bind mount runtime) — pas de restriction macOS.
+
+```
+infra/
+  loki/
+    Dockerfile          ← FROM grafana/loki:3.1.1 + COPY loki-config.yml
+    loki-config.yml
+  promtail/
+    Dockerfile          ← FROM grafana/promtail:3.1.1 + COPY promtail-config.yml
+    promtail-config.yml
+  nginx/
+    Dockerfile          ← FROM nginx:1.27-alpine + COPY default.conf
+    default.conf
+  grafana/
+    Dockerfile          ← FROM grafana/grafana:11.3.1 + COPY provisioning/...
+    provisioning/
+```
+
+Contenu type (ex. `infra/loki/Dockerfile`) :
+```dockerfile
+FROM grafana/loki:3.1.1
+COPY loki-config.yml /etc/loki/config.yml
+```
+
+Dans `docker-compose.yml`, remplacer `image:` par `build:` pour ces services :
+```yaml
+# Avant
+loki:
+  image: grafana/loki:3.1.1
+  volumes:
+    - ./infra/loki/loki-config.yml:/etc/loki/config.yml:ro  # ← échoue
+
+# Après
+loki:
+  build:
+    context: ./infra/loki
+    dockerfile: Dockerfile
+  # plus de volumes pour la config — COPY l'a embarquée dans l'image
+```
+
+**Mettre à jour une config** : modifier le fichier source dans `infra/<service>/` puis :
+```bash
+docker compose up -d --build loki   # rebuild rapide (couche COPY en cache si pas modifiée)
+```
+
+**Alternative si Docker Desktop est configurable**
+Ouvrir Docker Desktop → ⚙️ Settings → Resources → File Sharing → ajouter `/Users/apple/Documents` → Apply & Restart. Le projet repasse alors aux bind mounts classiques sans modification de code.
+
+**Règle à retenir**
+Sur macOS Docker Desktop avec un projet dans `~/Documents`, ne jamais utiliser de bind mounts vers des fichiers de config statiques. Embarquer ces fichiers dans des images via `COPY` (Dockerfile dédié) : pas de restriction file sharing, rebuild rapide grâce au cache Docker, les sources restent dans le repo à leur emplacement naturel.
+
+---
+
+## [2026-05-25] SOC2 — Suppression du mount docker.sock (Promtail → Loki Docker Log Driver)
+
+**Contexte**
+Promtail utilisait `docker_sd_configs` avec `/var/run/docker.sock:/var/run/docker.sock:ro` pour collecter les logs. Via `docker inspect`, ce socket permettait de lire les variables d'environnement de tous les conteneurs (JWT_SECRET, POSTGRES_PASSWORD, etc.) — risque R-11 de la politique SOC2.
+
+**Solution**
+Remplacer Promtail par le **Loki Docker Log Driver** (Option A) :
+
+1. Installer le plugin une fois par machine dev :
+```bash
+docker plugin install grafana/loki-docker-driver:latest --alias loki --grant-all-permissions
+```
+
+2. Exposer Loki sur `127.0.0.1:3100` (requis par le driver qui tourne hors réseau Docker) :
+```yaml
+loki:
+  ports:
+    - "127.0.0.1:3100:3100"
+```
+
+3. Ajouter un YAML anchor commun et un bloc `logging:` par service :
+```yaml
+x-loki-options: &loki-options
+  loki-url: "http://host.docker.internal:3100/loki/api/v1/push"
+  loki-retries: "5"
+  loki-batch-size: "400"
+  loki-timeout: "10s"
+
+services:
+  gateway:
+    logging:
+      driver: loki
+      options:
+        <<: *loki-options
+        loki-external-labels: "namespace=podiq,service=gateway"
+```
+
+4. Supprimer le service `promtail` du `docker-compose.yml`.
+
+5. **Ne pas appliquer le driver à `loki` et `grafana`** (risque de boucle si Loki redémarre).
+
+**Vérification post-déploiement**
+```bash
+# Aucun docker.sock monté
+docker ps -q | xargs docker inspect --format '{{.Name}} → {{range .Mounts}}{{if eq .Source "/var/run/docker.sock"}}SOCKET{{end}}{{end}}'
+# → toutes les lignes doivent être vides après le nom
+
+# Log driver Loki actif
+docker inspect podiq-gateway --format '{{.HostConfig.LogConfig.Type}}'
+# → loki
+```
+
+**Règle à retenir**
+Ne jamais monter `/var/run/docker.sock` dans un conteneur de collecte de logs en production. Utiliser le log driver Loki (Docker Compose) ou un DaemonSet Promtail sur fichiers (Kubernetes). Voir `docs/observability-k8s.md` pour la migration K8s.
+
+---
+
+## [2026-05-25] SOC2 — Rétention Loki corrigée (168h → 2160h)
+
+**Contexte**
+`infra/loki/loki-config.yml` avait `retention_period: 168h` (7 jours). La politique SOC2 §7.3 exige **90 jours minimum en production**.
+
+**Solution**
+```yaml
+# infra/loki/loki-config.yml
+limits_config:
+  retention_period: 2160h    # 90 jours — conforme SOC2 §7.3
+```
+
+Puis rebuild de l'image Loki (la config est baked via `infra/loki/Dockerfile`) :
+```bash
+docker compose up -d --build loki
+```
+
+**Règle à retenir**
+La config Loki est embarquée dans l'image Docker (pas de bind mount). Tout changement de config = modification du fichier source + `docker compose up -d --build loki`. Ne pas oublier de vérifier la retention après rebuild :
+```bash
+docker exec podiq-loki grep retention_period /etc/loki/config.yml
+```
+
+---
+
+## [2026-05-25] SOC2 §8.3 — Hachage passwords SHA-256 → Argon2id
+
+**Problème (sécurité)**
+Le hachage des mots de passe utilisait SHA-256+pepper (`hashlib.sha256(f"{pepper}{password}".encode()).hexdigest()`). SHA-256 est un algorithme de hash général, non conçu pour les mots de passe :
+- Pas de sel unique par appel → vulnérable aux attaques rainbow table
+- Trop rapide (milliards d'itérations/seconde sur GPU) → brute-force réaliste
+- Non conforme OWASP, NIST SP 800-63B, SOC 2 §8.3
+
+**Solution**
+Migration vers **Argon2id** avec paramètres OWASP (time=2, mem=64 MB, parallelism=2) via `argon2-cffi==23.1.0` :
+
+```python
+# services/auth-service/app/grpc_server.py
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+
+_ph = PasswordHasher(time_cost=2, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16)
+
+def _hash_password(password: str) -> str:
+    return _ph.hash(password)  # sel aléatoire unique à chaque appel
+
+def _needs_rehash(stored_hash: str) -> bool:
+    return not stored_hash.startswith("$argon2")  # True = legacy SHA-256
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    if stored_hash.startswith("$argon2"):
+        try:
+            return _ph.verify(stored_hash, password)
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            return False
+    # Legacy path — SHA-256+pepper
+    pepper = os.environ.get("DJANGO_SECRET_KEY", "")
+    legacy = hashlib.sha256(f"{pepper}{password}".encode()).hexdigest()
+    return hmac.compare_digest(legacy, stored_hash)
+```
+
+**Migration transparente** : dans `Login`, après vérification réussie :
+```python
+if _needs_rehash(user.password_hash):
+    user.password_hash = _hash_password(request.password)
+    user.save(update_fields=["password_hash"])
+    logger.info("password_rehashed_argon2id", user_id=str(user.id))
+```
+
+**Tests ajoutés**
+- `test_hash_password_is_argon2id_format` — format `$argon2id$`
+- `test_hash_password_uses_unique_salts` — 2 appels = 2 hashes différents
+- `test_needs_rehash_legacy_sha256_returns_true`
+- `test_needs_rehash_argon2id_returns_false`
+- `test_verify_legacy_sha256_correct_password` — compatibilité ascendante
+- `test_login_upgrades_legacy_sha256_to_argon2id` — migration effective
+- `test_login_does_not_rehash_already_argon2id`
+
+Résultat : **47/47 tests verts**.
+
+**Règle à retenir**
+Ne jamais utiliser SHA-1, SHA-256, MD5 pour les mots de passe. Utiliser exclusivement Argon2id (ou bcrypt/scrypt en second recours). Ajouter `argon2-cffi` aux `requirements.txt` du service, rebuilder l'image Docker après ajout.
 
 ---

@@ -5,6 +5,7 @@ from django.utils import timezone as django_tz
 from graphql import GraphQLError
 from strawberry.types import Info
 
+from app.api_codes import ErrorCode, graphql_error_extensions
 from app.graphql.types import AnalysisJobType, ClusterType
 from app.tasks import analyze_incident_task
 from core.models import AnalysisJob, Cluster, InstallToken
@@ -16,12 +17,18 @@ def _resolve_install_token(raw_token: str) -> InstallToken:
     try:
         token = InstallToken.objects.select_related("workspace").get(token=raw_token)
     except InstallToken.DoesNotExist:
-        raise GraphQLError("Invalid install token")
+        raise GraphQLError(
+            "Invalid install token",
+            extensions=graphql_error_extensions(ErrorCode.UNAUTHORIZED),
+        )
 
     # `used` means cluster registration complete — the agent keeps using the same
     # token for all subsequent heartbeats and incident reports, so we don't reject it.
     if token.expires_at < django_tz.now():
-        raise GraphQLError("Install token expired")
+        raise GraphQLError(
+            "Install token expired",
+            extensions=graphql_error_extensions(ErrorCode.UNAUTHORIZED),
+        )
 
     return token
 
@@ -51,6 +58,18 @@ def _agent_heartbeat(
     if created:
         token.used = True
         token.save(update_fields=["used"])
+
+        # First heartbeat for this cluster → mark the workspace as onboarded.
+        # Only set once: if the workspace already has an onboarded_at (e.g. a second
+        # cluster was added later), we leave the original date untouched.
+        if workspace.onboarded_at is None:
+            workspace.onboarded_at = django_tz.now()
+            workspace.save(update_fields=["onboarded_at"])
+            logger.info(
+                "workspace_onboarded",
+                workspace_id=str(workspace.id),
+                cluster_id=str(cluster.id),
+            )
 
     logger.info(
         "agent_heartbeat",
@@ -88,7 +107,8 @@ def _agent_report_incident(
         cluster = Cluster.objects.get(install_token=token)
     except Cluster.DoesNotExist:
         raise GraphQLError(
-            "No cluster registered for this token — send heartbeat first"
+            "No cluster registered for this token — send heartbeat first",
+            extensions=graphql_error_extensions(ErrorCode.NOT_FOUND),
         )
 
     job = AnalysisJob.objects.create(

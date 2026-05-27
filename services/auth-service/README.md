@@ -34,7 +34,7 @@ Ce service possède sa propre instance PostgreSQL : **`postgres-auth`** (port 54
 |-----------------|-----------|--------------------------------------------------|
 | `id`            | UUID (PK) | Identifiant unique de l'utilisateur              |
 | `email`         | string    | Email unique (identifiant de connexion)          |
-| `password_hash` | string    | Mot de passe haché avec SHA-256 + pepper         |
+| `password_hash` | string    | Mot de passe haché avec **Argon2id** (OWASP, sel unique par hash) |
 | `created_at`    | datetime  | Date de création du compte                       |
 
 ### Table `api_keys`
@@ -74,7 +74,7 @@ email   : string       — email confirmé
 
 **Ce qui se passe en interne :**
 1. Vérifie que l'email n'existe pas déjà → erreur `ALREADY_EXISTS`
-2. Hache le mot de passe : `SHA-256(pepper + password)`
+2. Hache le mot de passe avec **Argon2id** (time=2, mem=64 MB, p=2 — sel aléatoire unique)
 3. Crée la ligne dans `users`
 4. Génère un JWT signé avec `JWT_SECRET`
 5. Retourne token + user_id
@@ -98,8 +98,11 @@ email   : string
 
 **Ce qui se passe en interne :**
 1. Cherche l'utilisateur par email → erreur `NOT_FOUND` si absent
-2. Recalcule le hash et compare avec `compare_digest` (résistant aux timing attacks)
-3. Génère un nouveau JWT et le retourne
+2. Vérifie le mot de passe via `_verify_password` :
+   - Hash Argon2id → `argon2.PasswordHasher.verify()` (résistant timing attacks)
+   - Hash legacy SHA-256+pepper → `hmac.compare_digest()` (migration transparente)
+3. Si le hash est legacy : le rehache en Argon2id et sauvegarde immédiatement (`password_rehashed_argon2id`)
+4. Génère un nouveau JWT et le retourne
 
 ---
 
@@ -190,14 +193,16 @@ success : bool
 
 ## Sécurité
 
-| Mesure                      | Détail                                                              |
-|-----------------------------|---------------------------------------------------------------------|
-| Mots de passe               | SHA-256 avec pepper (clé secrète Django) — jamais stockés en clair |
-| Comparaison des hashes      | `hashlib.compare_digest` — résistant aux timing attacks            |
-| JWT                         | Algorithme HS256, expiration 24h, signé avec `JWT_SECRET`          |
-| Clés API                    | `secrets.token_urlsafe(32)` — 256 bits d'entropie                  |
-| Stockage des clés API       | Seul le SHA-256 est en base — la clé brute n'est jamais conservée  |
-| Messages d'erreur génériques| Login retourne `Invalid email or password` (pas de distinction)|
+| Mesure                       | Détail                                                                                    |
+|------------------------------|-------------------------------------------------------------------------------------------|
+| Mots de passe                | **Argon2id** (time=2, mem=64 MB, p=2, sel 16 octets) — OWASP, NIST SP 800-63B, SOC2 §8.3 |
+| Migration legacy             | Hashes SHA-256+pepper détectés au login → rehachés Argon2id automatiquement (`_needs_rehash`) |
+| Comparaison hashes Argon2id  | `PasswordHasher.verify()` — résistant aux timing attacks                                  |
+| Comparaison hashes legacy    | `hmac.compare_digest()` — résistant aux timing attacks pendant la fenêtre de migration    |
+| JWT                          | Algorithme HS256, expiration 24h, signé avec `JWT_SECRET`                                 |
+| Clés API                     | `secrets.token_urlsafe(32)` — 256 bits d'entropie                                         |
+| Stockage des clés API        | Seul le SHA-256 est en base — la clé brute n'est jamais conservée                         |
+| Messages d'erreur génériques | Login retourne `Invalid email or password` (pas de distinction email/mot de passe)        |
 
 ---
 
@@ -206,7 +211,7 @@ success : bool
 | Variable              | Obligatoire | Défaut | Description                              |
 |-----------------------|-------------|--------|------------------------------------------|
 | `DATABASE_URL`        | Oui         | —      | URL PostgreSQL vers `postgres-auth:5433/podiq_auth`      |
-| `DJANGO_SECRET_KEY`   | Oui         | —      | Pepper pour le hash des mots de passe    |
+| `DJANGO_SECRET_KEY`   | Oui         | —      | Pepper pour les hashes SHA-256 legacy (migration uniquement) + sécurité Django |
 | `JWT_SECRET`          | Oui         | —      | Secret de signature des tokens JWT       |
 | `JWT_EXPIRY_MINUTES`  | Non         | `1440` | Durée de vie des JWT (24h par défaut)    |
 | `GRPC_PORT`           | Non         | `50051`| Port d'écoute gRPC                       |
